@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Use Chrome</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header class="header">
+      <h1>Agent Use Chrome</h1>
+      <div id="status" class="status status--unknown">未知</div>
+    </header>
+
+    <section class="config">
+      <label class="field">
+        <span>端口</span>
+        <input type="text" value="自动扫描 12345-12350" disabled />
+      </label>
+      <label class="field">
+        <span>Token</span>
+        <input id="token" type="text" />
+      </label>
+      <div class="actions">
+        <button id="save" class="btn btn--primary">保存并重连</button>
+        <button id="stop" class="btn btn--danger">紧急停止</button>
+      </div>
+    </section>
+
+    <section class="log">
+      <div class="log__head">
+        <span>动作日志</span>
+        <button id="clear" class="btn btn--ghost">清空</button>
+      </div>
+      <ul id="logList" class="log__list"></ul>
+    </section>
+
+    <script src="panel.js"></script>
+  </body>
+</html>
