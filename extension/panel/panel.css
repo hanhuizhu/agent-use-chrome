@@ -77,15 +77,6 @@ body {
   font-size: 12px;
 }
 
-.field input {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  padding: 7px 9px;
-  font-size: 13px;
-}
-
 .actions {
   display: flex;
   gap: 8px;
@@ -112,38 +103,6 @@ body {
   background: transparent;
   color: var(--muted);
   padding: 2px 6px;
-}
-
-.log__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  color: var(--muted);
-  font-size: 12px;
-  margin-bottom: 6px;
-}
-
-.log__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 420px;
-  overflow-y: auto;
-  font-family: 'SF Mono', Menlo, monospace;
-  font-size: 12px;
-}
-
-.log__list li {
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--border);
-  white-space: pre-wrap;
-  word-break: break-all;
-  color: var(--text);
-}
-
-.log__list li .ts {
-  color: var(--muted);
-  margin-right: 6px;
 }
 
 /* ------------------------- Tabs ------------------------- */
@@ -244,6 +203,126 @@ body {
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 8px;
+}
+
+/* 会话下拉（自绘） */
+
+.picker {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.picker__trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.picker__trigger:hover {
+  border-color: var(--primary);
+}
+
+.picker__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__caret {
+  color: var(--muted);
+  font-size: 10px;
+  flex: none;
+}
+
+.picker__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.picker__filter {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.picker__list {
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.picker__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+}
+
+.picker__item:last-child {
+  border-bottom: none;
+}
+
+.picker__item--active,
+.picker__item:hover {
+  background: rgba(79, 140, 255, 0.12);
+}
+
+.picker__item--selected .picker__item-title {
+  color: var(--primary);
+}
+
+.picker__item-title {
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__item-sub {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker__empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
 
 /* 消息流 */
@@ -428,6 +507,24 @@ body {
   color: var(--text);
   max-height: 200px;
   overflow-y: auto;
+}
+
+/* 历史分隔线 */
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
 
 /* 状态行 / 思考动画 */

@@ -11,10 +11,15 @@
 
 import { spawn, spawnSync, ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { readdir, open, stat } from 'node:fs/promises';
+import { readdir, readFile, open, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { ChatSessionInfo, ChatStreamEvent } from './protocol.js';
+import {
+  ChatHistoryEntry,
+  ChatHistoryResult,
+  ChatSessionInfo,
+  ChatStreamEvent,
+} from './protocol.js';
 
 /** 会话列表默认返回条数 */
 const MAX_SESSIONS = 30;
@@ -22,6 +27,9 @@ const MAX_SESSIONS = 30;
 const HEAD_READ_BYTES = 64 * 1024;
 /** 标题最大长度 */
 const TITLE_MAX_LEN = 60;
+
+/** get_history 最多返回的条目数（超出取尾部） */
+const MAX_HISTORY_ENTRIES = 100;
 
 /** 支持的权限模式（透传给 claude CLI） */
 const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'bypassPermissions', 'plan']);
@@ -205,11 +213,96 @@ export class SessionManager {
     return true;
   }
 
+  /** 读取指定会话的历史消息（面板切换会话时回放），超过上限只取尾部 */
+  async getHistory(sessionId: string): Promise<ChatHistoryResult> {
+    if (!/^[a-zA-Z0-9-]+$/.test(sessionId)) {
+      throw new Error('无效的会话 id');
+    }
+    const projectsDir = join(homedir(), '.claude', 'projects');
+    let projectDirs: string[];
+    try {
+      projectDirs = await readdir(projectsDir);
+    } catch {
+      throw new Error('未找到 CC 会话目录（~/.claude/projects）');
+    }
+
+    // 会话文件按 <sessionId>.jsonl 命名，逐项目目录查找
+    let content: string | null = null;
+    for (const dir of projectDirs) {
+      try {
+        content = await readFile(join(projectsDir, dir, `${sessionId}.jsonl`), 'utf8');
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (content === null) {
+      throw new Error('未找到该会话的历史文件（可能已被清理）');
+    }
+
+    const entries: ChatHistoryEntry[] = [];
+    for (const line of content.split('\n')) {
+      const mapped = mapHistoryLine(line);
+      if (mapped) entries.push(...mapped);
+    }
+    const truncated = entries.length > MAX_HISTORY_ENTRIES;
+    return {
+      entries: truncated ? entries.slice(-MAX_HISTORY_ENTRIES) : entries,
+      truncated,
+    };
+  }
+
   private assertClaudeAvailable(): void {
     if (!this.claudeBin) {
       throw new Error('未找到 claude CLI（which claude 失败），请确认已安装并在 PATH 中');
     }
   }
+}
+
+/** 元信息文本（斜杠命令、system-reminder 等）不作为历史消息展示 */
+function isMetaText(text: string): boolean {
+  return /^<(command-|local-command|system-reminder)/.test(text.trim());
+}
+
+/**
+ * 把会话 jsonl 的一行映射为 0~N 条历史条目。
+ * 只关心 user 文本与 assistant 文本/工具调用；tool_result、元信息行忽略。
+ */
+export function mapHistoryLine(line: string): ChatHistoryEntry[] | null {
+  if (!line.trim()) return null;
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return null;
+  }
+
+  if (obj.type === 'user') {
+    const text = extractUserText(obj);
+    if (!text.trim() || isMetaText(text)) return null;
+    return [{ role: 'user', text }];
+  }
+
+  if (obj.type === 'assistant') {
+    const message = obj.message as { content?: unknown[] } | undefined;
+    if (!Array.isArray(message?.content)) return null;
+    const entries: ChatHistoryEntry[] = [];
+    for (const block of message.content as Record<string, unknown>[]) {
+      if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+        entries.push({ role: 'assistant', text: block.text });
+      } else if (block.type === 'tool_use' && typeof block.name === 'string') {
+        const input = block.input ? JSON.stringify(block.input) : '';
+        entries.push({
+          role: 'tool',
+          name: block.name,
+          summary: input.length > 600 ? `${input.slice(0, 600)}…` : input,
+        });
+      }
+    }
+    return entries.length ? entries : null;
+  }
+
+  return null;
 }
 
 /** 探测 claude 可执行文件路径 */

@@ -56,7 +56,19 @@ export interface PongMessage {
 // ------------------------- 侧边栏 Chat（extension -> bridge 反向请求） -------------------------
 
 /** 侧边栏聊天操作方法名 */
-export type ChatMethod = 'list_sessions' | 'send' | 'cancel';
+export type ChatMethod = 'list_sessions' | 'send' | 'cancel' | 'get_history';
+
+/** 会话历史条目（get_history 返回，供面板回放） */
+export type ChatHistoryEntry =
+  | { role: 'user'; text: string }
+  | { role: 'assistant'; text: string }
+  | { role: 'tool'; name: string; summary: string };
+
+/** get_history 返回结构 */
+export interface ChatHistoryResult {
+  entries: ChatHistoryEntry[];
+  truncated: boolean; // 超过上限时只返回尾部
+}
 
 /** extension -> bridge：侧边栏发起的聊天请求 */
 export interface ChatRequestMessage {

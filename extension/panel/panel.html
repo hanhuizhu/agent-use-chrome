@@ -20,9 +20,16 @@
     <!-- ==================== 聊天 Tab ==================== -->
     <section id="tabChat" class="tab-page">
       <div class="chat-topbar">
-        <select id="sessionSelect" class="select select--grow">
-          <option value="">加载会话中…</option>
-        </select>
+        <div id="sessionPicker" class="picker">
+          <button id="pickerTrigger" class="picker__trigger" type="button">
+            <span id="pickerLabel" class="picker__label">加载会话中…</span>
+            <span class="picker__caret">▾</span>
+          </button>
+          <div id="pickerMenu" class="picker__menu hidden">
+            <input id="pickerFilter" class="picker__filter" placeholder="搜索会话…" />
+            <div id="pickerList" class="picker__list"></div>
+          </div>
+        </div>
         <button id="refreshSessions" class="icon-btn" title="刷新会话列表">⟳</button>
         <button id="settingsToggle" class="icon-btn" title="聊天设置">⚙</button>
       </div>
@@ -59,31 +66,16 @@
     <!-- ==================== 状态 Tab ==================== -->
     <section id="tabStatus" class="tab-page hidden">
       <section class="config">
-        <label class="field">
-          <span>端口</span>
-          <input type="text" value="自动扫描 12345-12350" disabled />
-        </label>
-        <label class="field">
-          <span>Token</span>
-          <input id="token" type="text" />
-        </label>
         <div class="actions">
           <button id="save" class="btn btn--primary">保存并重连</button>
           <button id="stop" class="btn btn--danger">紧急停止</button>
         </div>
       </section>
-
-      <section class="log">
-        <div class="log__head">
-          <span>动作日志</span>
-          <button id="clear" class="btn btn--ghost">清空</button>
-        </div>
-        <ul id="logList" class="log__list"></ul>
-      </section>
     </section>
 
     <script src="panel.js"></script>
     <script src="markdown.js"></script>
+    <script src="session-picker.js"></script>
     <script src="chat.js"></script>
   </body>
 </html>

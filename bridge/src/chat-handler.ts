@@ -39,6 +39,9 @@ export class ChatHandler {
       }
       case 'cancel':
         return { cancelled: this.sessions.cancel() };
+      case 'get_history':
+        // 面板切换会话时回放历史消息
+        return this.sessions.getHistory(String(msg.params.sessionId ?? ''));
       default:
         throw new Error(`未知聊天方法 ${(msg as ChatRequestMessage).method}`);
     }

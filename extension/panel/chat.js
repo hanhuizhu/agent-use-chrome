@@ -8,7 +8,6 @@
 
 const NEW_SESSION_VALUE = '__new__';
 
-const sessionSelect = document.getElementById('sessionSelect');
 const projectRow = document.getElementById('projectRow');
 const projectSelect = document.getElementById('projectSelect');
 const permissionSelect = document.getElementById('permissionSelect');
@@ -38,7 +37,17 @@ const chatState = {
   sessions: [], // list_sessions 结果
   newSessionId: null, // 「新会话」首轮返回的 session id，后续消息续接它
   turns: new Map(), // turnId -> turn
+  historySeq: 0, // 历史加载序号：快速切换会话时丢弃过期结果
 };
+
+// 自定义会话下拉（原生 select 无法美化下拉面板）
+const picker = globalThis.SessionPicker.init({
+  onChange: (value) => {
+    chatState.newSessionId = null; // 切换目标后重置新会话续接状态
+    syncProjectRow();
+    void loadHistory(value);
+  },
+});
 
 const pendingRequests = new Map(); // id -> { resolve, reject }
 
@@ -96,36 +105,36 @@ function escapeText(s) {
 }
 
 async function loadSessions() {
-  sessionSelect.innerHTML = '<option value="">加载会话中…</option>';
+  picker.setPlaceholder('加载会话中…');
   try {
     chatState.sessions = (await chatRequest('list_sessions').promise) ?? [];
     renderSessionOptions();
   } catch (err) {
-    sessionSelect.innerHTML = `<option value="">加载失败：${escapeText(err.message)}</option>`;
+    picker.setPlaceholder(`加载失败：${err.message}`);
   }
 }
 
 function renderSessionOptions() {
-  sessionSelect.innerHTML = '';
-  const newOpt = document.createElement('option');
-  newOpt.value = NEW_SESSION_VALUE;
-  newOpt.textContent = '＋ 新会话（选择项目）';
-  sessionSelect.appendChild(newOpt);
-  for (const s of chatState.sessions) {
-    const opt = document.createElement('option');
-    opt.value = s.sessionId;
-    opt.textContent = `[${projectName(s.cwd)}] ${s.title} · ${formatTime(s.mtime)}`;
-    sessionSelect.appendChild(opt);
-  }
-  if (chatState.sessions.length > 0) {
-    sessionSelect.value = chatState.sessions[0].sessionId;
+  const options = [
+    { value: NEW_SESSION_VALUE, title: '＋ 新会话（选择项目）' },
+    ...chatState.sessions.map((s) => ({
+      value: s.sessionId,
+      title: s.title,
+      sub: `${projectName(s.cwd)} · ${formatTime(s.mtime)}`,
+    })),
+  ];
+  picker.setOptions(options);
+  // 默认选中最近会话并回放其历史
+  if (!picker.getValue() && chatState.sessions.length > 0) {
+    picker.setValue(chatState.sessions[0].sessionId);
+    void loadHistory(picker.getValue());
   }
   syncProjectRow();
 }
 
 /** 新会话时显示项目选择（从已有会话的 cwd 去重而来） */
 function syncProjectRow() {
-  const isNew = sessionSelect.value === NEW_SESSION_VALUE;
+  const isNew = picker.getValue() === NEW_SESSION_VALUE;
   projectRow.classList.toggle('hidden', !isNew);
   if (!isNew) return;
 
@@ -157,7 +166,7 @@ function nowTime() {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-function appendUserBubble(turn, text) {
+function appendPlainUserBubble(text) {
   hideEmptyState();
   const wrap = document.createElement('div');
   wrap.className = 'msg msg--user';
@@ -166,8 +175,12 @@ function appendUserBubble(turn, text) {
   body.textContent = text;
   wrap.appendChild(body);
   messagesEl.appendChild(wrap);
-  turn.userEl = wrap;
   scrollToBottom();
+  return wrap;
+}
+
+function appendUserBubble(turn, text) {
+  turn.userEl = appendPlainUserBubble(text);
 }
 
 function addQueueTag(turn, position) {
@@ -184,12 +197,12 @@ function removeQueueTag(turn) {
   turn.queueTag = null;
 }
 
-function appendAssistantBlock() {
+function appendAssistantBlock(time = nowTime()) {
   const wrap = document.createElement('div');
   wrap.className = 'msg msg--assistant';
   const role = document.createElement('div');
   role.className = 'msg__role';
-  role.innerHTML = `✳ Claude <span class="msg__time">${nowTime()}</span>`;
+  role.innerHTML = `✳ Claude${time ? ` <span class="msg__time">${time}</span>` : ''}`;
   const body = document.createElement('div');
   body.className = 'msg__body md';
   wrap.appendChild(role);
@@ -229,6 +242,7 @@ function appendMeta(text, isError = false) {
   div.textContent = text;
   messagesEl.appendChild(div);
   scrollToBottom();
+  return div;
 }
 
 function showThinking(turn) {
@@ -244,6 +258,63 @@ function showThinking(turn) {
 function clearThinking(turn) {
   turn.thinkingEl?.remove();
   turn.thinkingEl = null;
+}
+
+// ------------------------- 历史消息回放 -------------------------
+
+/** 清空消息区并保留空状态元素；进行中轮次的 DOM 引用一并作废（后续事件另起新块） */
+function clearMessages() {
+  messagesEl.innerHTML = '';
+  emptyState.classList.remove('hidden');
+  messagesEl.appendChild(emptyState);
+  for (const turn of chatState.turns.values()) {
+    turn.userEl = null;
+    turn.queueTag = null;
+    turn.thinkingEl = null;
+    turn.streamEl = null;
+  }
+}
+
+function appendDivider(text) {
+  const div = document.createElement('div');
+  div.className = 'divider';
+  div.textContent = text;
+  messagesEl.appendChild(div);
+}
+
+function renderHistoryEntry(entry) {
+  if (entry.role === 'user') {
+    appendPlainUserBubble(entry.text);
+  } else if (entry.role === 'assistant') {
+    renderAssistant(appendAssistantBlock(''), entry.text);
+  } else if (entry.role === 'tool') {
+    appendToolCard(entry.name, entry.summary);
+  }
+}
+
+/** 切换会话时回放该会话的历史消息（最近 100 条） */
+async function loadHistory(value) {
+  const seq = ++chatState.historySeq;
+  clearMessages();
+  if (!value || value === NEW_SESSION_VALUE) return;
+
+  const loading = appendMeta('加载历史消息…');
+  try {
+    const res = await chatRequest('get_history', { sessionId: value }).promise;
+    if (seq !== chatState.historySeq) return; // 期间又切换了会话，丢弃
+    loading.remove();
+    const entries = res?.entries ?? [];
+    if (entries.length === 0) return;
+    hideEmptyState();
+    if (res.truncated) appendDivider('仅显示最近 100 条');
+    for (const entry of entries) renderHistoryEntry(entry);
+    appendDivider('以上为历史消息');
+    scrollToBottom();
+  } catch (err) {
+    if (seq !== chatState.historySeq) return;
+    loading.remove();
+    appendMeta(`历史加载失败：${err.message}`, true);
+  }
 }
 
 // ------------------------- 流事件处理 -------------------------
@@ -299,7 +370,7 @@ function handleStreamEvent(turnId, event) {
       break;
     case 'result': {
       finishTurn(turn);
-      if (event.sessionId && sessionSelect.value === NEW_SESSION_VALUE) {
+      if (event.sessionId && picker.getValue() === NEW_SESSION_VALUE) {
         chatState.newSessionId = event.sessionId;
       }
       const cost = typeof event.costUsd === 'number' ? ` · $${event.costUsd.toFixed(4)}` : '';
@@ -327,7 +398,7 @@ function finishTurn(turn) {
 
 /** 解析当前选择，得到 send 参数；不合法时返回 null 并提示 */
 function resolveSendTarget() {
-  const selected = sessionSelect.value;
+  const selected = picker.getValue();
   if (selected === NEW_SESSION_VALUE) {
     // 新会话：首轮不带 sessionId；后续轮次续接返回的 id（bridge 侧也会为排队消息续接）
     const cwd = projectSelect.value;
@@ -401,11 +472,6 @@ chatInput.addEventListener('keydown', (e) => {
 
 settingsToggle.addEventListener('click', () => {
   settingsPop.classList.toggle('hidden');
-});
-
-sessionSelect.addEventListener('change', () => {
-  chatState.newSessionId = null; // 切换目标后重置新会话续接状态
-  syncProjectRow();
 });
 
 permissionSelect.addEventListener('change', () => {
