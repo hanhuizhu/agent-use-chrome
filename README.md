@@ -139,41 +139,21 @@ cp skills/chrome/SKILL.md ~/.claude/skills/chrome/
 2. 对 agent 说:「打开 https://example.com 并截图」。
 3. 浏览器自动导航,agent 返回截图 —— 链路打通。
 
-## 侧边栏聊天（对接 CC 会话）
+## 侧边栏聊天（extension 驱动）
 
-侧边栏「聊天」Tab 可以直接与 Claude Code 会话对话——插件不调度任何 LLM，CC 就是大脑。支持两种模式：
-
-### 🟢 在线会话（实时，推荐）
-
-对接一个**正在运行的 CC 会话**（终端/IDE 里活着的那个）。机制是 listen/reply 长轮询：
+侧边栏「聊天」Tab 可以直接与任意 Claude Code 会话对话——插件不调度任何 LLM，CC 就是大脑。**无需 CC 预先进入任何模式**：面板发消息即触达。
 
 ```
-panel(chat) ⇄ background ⇄ WS ⇄ bridge(ChatHub) ⇄ MCP 工具 chat_listen/chat_reply ⇄ 活着的 CC 会话
+panel(chat) ⇄ background ⇄ WS ⇄ bridge ⇄ spawn claude CLI（headless resume）
 ```
-
-- 在 CC 会话里说「连接浏览器聊天」（需安装 `chrome-chat` skill），CC 进入循环：`chat_listen` 挂起等消息 → 处理 → `chat_reply` 推回面板 → 继续监听
-- 面板会话下拉出现「🟢 在线会话」分组，选中即聊
-- **无需 CLI 登录态**，复用会话自身认证；工具权限走 IDE/终端的交互确认（弹窗你点批准）
-- 该会话有完整上下文，且本来就连着浏览器（browser_* 工具无缝闭环）
-- 代价：监听期间会话被占住（esc 可退出）；退出约 90s 后面板标记离线
-
-### 历史会话（headless CLI）
-
-对接**任意历史会话**（含已关闭的）：
 
 - 下拉列出最近 30 个 CC 会话（跨项目，按活跃时间倒序），也可「＋新会话」并选择项目目录
-- bridge 以 `claude --resume <id> -p <消息> --output-format stream-json` headless 执行，流式结果推回面板；聊天记录进入该会话的正式历史
-- 权限模式面板可切换：默认 / acceptEdits / bypassPermissions（bypass 有红色警示，慎用）
-- 需要 `claude` CLI 在 PATH 中且**登录态有效**（若长期只用桌面端，CLI 的 OAuth token 可能过期，任意终端跑一次 `claude` 重新登录即可）
-- 对**正开在终端里的会话**发消息可能造成历史分叉，面板有常驻提示
-- headless 下未预授权的工具会被拒绝（默认权限模式），CC 会说明或绕过
-
-### 安装 chrome-chat skill（在线会话模式需要）
-
-```bash
-mkdir -p ~/.claude/skills/chrome-chat
-cp skills/chrome-chat/SKILL.md ~/.claude/skills/chrome-chat/
-```
+- bridge 以 `claude --resume <id> -p <消息> --output-format stream-json --include-partial-messages` headless 执行，回复**流式打字**渲染（markdown 支持代码块/列表/粗体），工具调用折叠为卡片可展开
+- **忙时排队**：同一时间全局只有一个进行中轮次；期间发的消息带「⏳ 排队中」标签，当前轮次结束后自动续发。「■ 停止」终止当前轮次并清空队列
+- 「＋新会话」连发多条也会归入同一新会话（bridge 自动续接首轮返回的 session id）
+- 权限模式收纳在「⚙」设置里：默认 / acceptEdits / bypassPermissions（bypass 有红色警示，慎用）；headless 下未预授权的工具会被拒绝（默认模式），CC 会说明或绕过
+- 需要 `claude` CLI 在 PATH 中且**登录态有效**（若长期只用桌面端，CLI 的 OAuth token 可能过期，面板会提示；任意终端跑一次 `claude` 重新登录即可）
+- 对**正开在终端里的会话**发消息可能造成历史分叉，设置面板有提示
 
 ## MCP 工具一览
 
@@ -198,6 +178,7 @@ cp skills/chrome-chat/SKILL.md ~/.claude/skills/chrome-chat/
 | 曾经显示「未连接」但实际在干活 | 旧版竞态 bug,已修复:侧边栏现在每 2s 轮询真实状态 |
 | 报「候选端口全部不可用」 | 12345-12350 被占满,释放端口或用 `BRIDGE_PORT` 指定 |
 | 「该标签已打开 DevTools」 | CDP 与 DevTools 互斥,关闭该标签的开发者工具 |
+| 面板报「OAuth session expired」 | CLI 登录态过期,在终端运行一次 `claude` 重新登录 |
 | 页面顶部「正在调试此浏览器」横幅 | CDP attach 的正常现象 |
 
 ## 安全说明
