@@ -19,31 +19,39 @@
 
     <!-- ==================== 聊天 Tab ==================== -->
     <section id="tabChat" class="tab-page">
-      <div class="chat-config">
-        <div class="row">
-          <select id="sessionSelect" class="select select--grow">
-            <option value="">加载会话中…</option>
+      <div class="chat-topbar">
+        <select id="sessionSelect" class="select select--grow">
+          <option value="">加载会话中…</option>
+        </select>
+        <button id="refreshSessions" class="icon-btn" title="刷新会话列表">⟳</button>
+        <button id="settingsToggle" class="icon-btn" title="聊天设置">⚙</button>
+      </div>
+      <div id="projectRow" class="row hidden">
+        <select id="projectSelect" class="select select--grow"></select>
+      </div>
+      <div id="settingsPop" class="settings-pop hidden">
+        <label class="field">
+          <span>权限模式（headless 执行）</span>
+          <select id="permissionSelect" class="select">
+            <option value="default">默认（沿用已授权工具）</option>
+            <option value="acceptEdits">acceptEdits（自动批准编辑）</option>
+            <option value="bypassPermissions">bypass（全部自动批准）</option>
           </select>
-          <button id="refreshSessions" class="btn btn--ghost" title="刷新会话列表">⟳</button>
-        </div>
-        <div id="projectRow" class="row hidden">
-          <select id="projectSelect" class="select select--grow"></select>
-        </div>
-        <div class="row">
-          <select id="permissionSelect" class="select select--grow">
-            <option value="default">权限：默认（沿用已授权工具）</option>
-            <option value="acceptEdits">权限：acceptEdits（自动批准编辑）</option>
-            <option value="bypassPermissions">权限：bypass（全部自动批准）</option>
-          </select>
-        </div>
+        </label>
         <p id="bypassWarn" class="warn hidden">⚠ bypass 模式下浏览器内容可触发任意命令执行，仅在可信环境使用</p>
-        <p class="hint">提示：对正在终端中使用的会话发消息，可能造成历史分叉</p>
+        <p class="hint">对正在终端中使用的会话发消息，可能造成历史分叉</p>
       </div>
 
-      <div id="messages" class="messages"></div>
+      <div id="messages" class="messages">
+        <div id="emptyState" class="empty-state">
+          选择一个 CC 会话，输入消息即可对话
+          <span>会话忙碌时消息自动排队，空闲后继续处理</span>
+        </div>
+      </div>
 
       <div class="composer">
-        <textarea id="chatInput" rows="3" placeholder="给该会话发消息…（Cmd+Enter 发送）"></textarea>
+        <textarea id="chatInput" rows="1" placeholder="发消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button id="chatStop" class="btn btn--danger hidden" title="停止当前轮次并清空队列">■</button>
         <button id="chatSend" class="btn btn--primary">发送</button>
       </div>
     </section>
@@ -75,6 +83,7 @@
     </section>
 
     <script src="panel.js"></script>
+    <script src="markdown.js"></script>
     <script src="chat.js"></script>
   </body>
 </html>
