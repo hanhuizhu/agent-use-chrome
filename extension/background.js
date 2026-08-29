@@ -12,7 +12,8 @@
 // 端口候选段：与 bridge 一致，从小到大扫描（bridge 抢占第一个空闲端口）
 const PORT_RANGE = [12345, 12346, 12347, 12348, 12349, 12350];
 const DEFAULT_CONFIG = { token: 'local-dev-token' };
-const PORT_PROBE_TIMEOUT_MS = 1500; // 单端口探测超时
+const PORT_PROBE_TIMEOUT_MS = 500; // 单端口探测超时（localhost 无需 1.5s）
+const RECONNECT_ALARM = 'ws-reconnect'; // chrome.alarms 名称，抗 SW 重启
 
 let ws = null;
 let currentPort = null; // 当前已连接的端口
@@ -56,19 +57,22 @@ async function connect() {
   }
   scanning = true;
   clearTimeout(reconnectTimer);
-  const { token } = await getConfig();
+  reconnectTimer = null;
+  chrome.alarms.clear(RECONNECT_ALARM).catch(() => {});
 
-  for (const port of PORT_RANGE) {
-    const opened = await tryPort(port, token);
-    if (opened) {
-      scanning = false;
-      return;
+  try {
+    const { token } = await getConfig();
+    for (const port of PORT_RANGE) {
+      const opened = await tryPort(port, token);
+      if (opened) {
+        return;
+      }
     }
+    broadcastStatus('disconnected');
+    scheduleReconnect();
+  } finally {
+    scanning = false;
   }
-
-  scanning = false;
-  broadcastStatus('disconnected');
-  scheduleReconnect();
 }
 
 /** 探测单个端口：成功打开则接管该 socket 并返回 true */
@@ -150,8 +154,11 @@ function adoptSocket(sock, port) {
 
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
+  // chrome.alarms 最小粒度 ~1 分钟，短延迟仍用 setTimeout
   reconnectTimer = setTimeout(connect, reconnectDelay);
-  reconnectDelay = Math.min(reconnectDelay * 2, 15000); // 上限 15s
+  // 同时设一个 alarm 兜底：SW 被杀后 setTimeout 丢失，alarm 能唤醒
+  chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: 0.5 });
+  reconnectDelay = Math.min(reconnectDelay * 2, 15000);
 }
 
 function startHeartbeat() {
@@ -607,9 +614,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.channel === 'control') {
     if (msg.action === 'reconnect') {
       stopped = false;
-      try {
-        ws?.close();
-      } catch {}
+      // 先解除旧 socket 的 onclose 绑定，避免它触发 scheduleReconnect 覆盖本次重连
+      const oldWs = ws;
+      if (oldWs) {
+        oldWs.onclose = null;
+        oldWs.onerror = null;
+        try { oldWs.close(); } catch {}
+      }
+      ws = null;
+      currentPort = null;
+      stopHeartbeat();
       reconnectDelay = 1000;
       connect();
       sendResponse({ ok: true });
@@ -627,15 +641,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({ ok: true });
     } else if (msg.action === 'queryStatus') {
       const connected = ws && ws.readyState === WebSocket.OPEN;
-      sendResponse({ connected: !!connected, port: currentPort, stopped });
-      // 侧边栏轮询时若发现未连接，顺手触发一次重连（缩短恢复时间）
-      if (!connected && !stopped) {
+      sendResponse({ connected: !!connected, port: currentPort, stopped, scanning });
+      // 只在无 pending 重连时才顺手触发扫描，避免覆盖指数退避
+      if (!connected && !stopped && !scanning && !reconnectTimer) {
         connect();
       }
     }
     return true;
   }
   return false;
+});
+
+// alarm 兜底重连：SW 被杀后恢复时 setTimeout 已丢失，alarm 唤醒后重新扫描
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === RECONNECT_ALARM && !stopped) {
+    connect();
+  }
 });
 
 // 启动即连接

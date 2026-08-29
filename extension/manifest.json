@@ -3,7 +3,7 @@
   "name": "Agent Use Chrome",
   "version": "0.1.0",
   "description": "让 Claude Code / Codex 通过 WebSocket 桥驱动本浏览器（截图 + 文本快照 + CDP 执行）。",
-  "permissions": ["debugger", "tabs", "activeTab", "scripting", "storage", "sidePanel"],
+  "permissions": ["alarms", "debugger", "tabs", "activeTab", "scripting", "storage", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",

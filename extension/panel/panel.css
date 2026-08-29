@@ -52,6 +52,17 @@ body {
   color: var(--danger);
 }
 
+.status--scanning {
+  background: rgba(79, 140, 255, 0.18);
+  color: var(--primary);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 .status--unknown {
   background: rgba(154, 154, 165, 0.18);
   color: var(--muted);

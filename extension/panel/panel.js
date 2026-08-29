@@ -33,6 +33,7 @@ const STATUS_POLL_MS = 2000; // 状态轮询间隔：避免打开瞬间的竞态
 const STATUS_TEXT = {
   connected: '已连接',
   disconnected: '未连接',
+  scanning: '扫描中…',
   stopped: '已停止',
   unknown: '未知',
 };
@@ -63,10 +64,36 @@ refreshStatus();
 setInterval(refreshStatus, STATUS_POLL_MS);
 
 document.getElementById('save').addEventListener('click', async () => {
-  // token 沿用已存储值（无输入项），保存动作即触发重连
+  const btn = document.getElementById('save');
+  btn.disabled = true;
+  btn.textContent = '连接中…';
+  setStatus('scanning');
+
   const cfg = await chrome.storage.local.get(['token']);
   await chrome.storage.local.set({ token: cfg.token ?? 'local-dev-token' });
   await chrome.runtime.sendMessage({ channel: 'control', action: 'reconnect' });
+
+  // 轮询等待扫描完成（最多 5 秒），展示真实结果
+  const deadline = Date.now() + 5000;
+  const poll = setInterval(async () => {
+    try {
+      const res = await chrome.runtime.sendMessage({ channel: 'control', action: 'queryStatus' });
+      if (!res?.scanning || Date.now() > deadline) {
+        clearInterval(poll);
+        btn.disabled = false;
+        btn.textContent = '保存并重连';
+        if (res?.connected) {
+          setStatus('connected', res.port);
+        } else {
+          setStatus('disconnected');
+        }
+      }
+    } catch {
+      clearInterval(poll);
+      btn.disabled = false;
+      btn.textContent = '保存并重连';
+    }
+  }, 300);
 });
 
 document.getElementById('stop').addEventListener('click', async () => {
