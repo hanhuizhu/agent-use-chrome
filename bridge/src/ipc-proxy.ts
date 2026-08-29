@@ -9,7 +9,7 @@ import * as net from 'node:net';
 import { randomUUID } from 'node:crypto';
 import {
   BridgeBackend,
-  BrowserMethod,
+  BridgeMethod,
   IpcRequest,
   IpcStatusQuery,
   IpcToProxy,
@@ -69,7 +69,7 @@ export class IpcProxy implements BridgeBackend {
     this.eventListeners.push(listener);
   }
 
-  async request(method: BrowserMethod, params: Record<string, unknown> = {}): Promise<unknown> {
+  async request(method: BridgeMethod, params: Record<string, unknown> = {}): Promise<unknown> {
     if (this.socket.destroyed) {
       throw new Error('IPC 连接已断开（Primary 进程可能已退出）');
     }

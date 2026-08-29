@@ -141,22 +141,39 @@ cp skills/chrome/SKILL.md ~/.claude/skills/chrome/
 
 ## 侧边栏聊天（对接 CC 会话）
 
-侧边栏「聊天」Tab 可以直接与 Claude Code 会话对话——插件不调度任何 LLM，CC 就是大脑：
+侧边栏「聊天」Tab 可以直接与 Claude Code 会话对话——插件不调度任何 LLM，CC 就是大脑。支持两种模式：
 
-- **选会话**：下拉列出最近 30 个 CC 会话（跨项目，按活跃时间倒序），也可「＋新会话」并选择项目目录
-- **发消息**：消息经 WS 到 bridge，bridge 以 `claude --resume <id> -p <消息> --output-format stream-json` headless 执行，流式结果推回面板；聊天记录进入该会话的正式历史（之后终端 `--resume` 可接续）
-- **权限模式**：面板可切换 默认 / acceptEdits / bypassPermissions（bypass 有红色警示，慎用）
-- **停止**：进行中可随时停止（kill 子进程）
+### 🟢 在线会话（实时，推荐）
+
+对接一个**正在运行的 CC 会话**（终端/IDE 里活着的那个）。机制是 listen/reply 长轮询：
 
 ```
-panel(chat) ⇄ background ⇄ WS ⇄ bridge ⇄ spawn `claude` CLI（headless）
+panel(chat) ⇄ background ⇄ WS ⇄ bridge(ChatHub) ⇄ MCP 工具 chat_listen/chat_reply ⇄ 活着的 CC 会话
 ```
 
-注意事项：
+- 在 CC 会话里说「连接浏览器聊天」（需安装 `chrome-chat` skill），CC 进入循环：`chat_listen` 挂起等消息 → 处理 → `chat_reply` 推回面板 → 继续监听
+- 面板会话下拉出现「🟢 在线会话」分组，选中即聊
+- **无需 CLI 登录态**，复用会话自身认证；工具权限走 IDE/终端的交互确认（弹窗你点批准）
+- 该会话有完整上下文，且本来就连着浏览器（browser_* 工具无缝闭环）
+- 代价：监听期间会话被占住（esc 可退出）；退出约 90s 后面板标记离线
 
+### 历史会话（headless CLI）
+
+对接**任意历史会话**（含已关闭的）：
+
+- 下拉列出最近 30 个 CC 会话（跨项目，按活跃时间倒序），也可「＋新会话」并选择项目目录
+- bridge 以 `claude --resume <id> -p <消息> --output-format stream-json` headless 执行，流式结果推回面板；聊天记录进入该会话的正式历史
+- 权限模式面板可切换：默认 / acceptEdits / bypassPermissions（bypass 有红色警示，慎用）
 - 需要 `claude` CLI 在 PATH 中且**登录态有效**（若长期只用桌面端，CLI 的 OAuth token 可能过期，任意终端跑一次 `claude` 重新登录即可）
 - 对**正开在终端里的会话**发消息可能造成历史分叉，面板有常驻提示
 - headless 下未预授权的工具会被拒绝（默认权限模式），CC 会说明或绕过
+
+### 安装 chrome-chat skill（在线会话模式需要）
+
+```bash
+mkdir -p ~/.claude/skills/chrome-chat
+cp skills/chrome-chat/SKILL.md ~/.claude/skills/chrome-chat/
+```
 
 ## MCP 工具一览
 

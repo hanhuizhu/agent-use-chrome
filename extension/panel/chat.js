@@ -1,11 +1,13 @@
 /**
  * chat.js —— 侧边栏「聊天」Tab
  *
- * 选择一个 Claude Code 会话（或新建），消息经 background -> WS -> bridge，
- * 由 bridge spawn `claude` CLI headless 执行，流式结果推回本面板。
+ * 两种对接模式（消息都经 background -> WS -> bridge）：
+ * - 在线会话（live）：投递给正在 chat_listen 监听的 CC 会话，回复实时推回
+ * - 历史会话（CLI）：bridge spawn `claude` CLI headless 执行，流式结果推回
  */
 
 const NEW_SESSION_VALUE = '__new__';
+const LIVE_PREFIX = 'live:'; // 在线会话的 option value 前缀 / 流事件 turnId 前缀
 
 const sessionSelect = document.getElementById('sessionSelect');
 const projectRow = document.getElementById('projectRow');
@@ -18,9 +20,10 @@ const chatSend = document.getElementById('chatSend');
 
 /** 面板聊天状态 */
 const chatState = {
-  sessions: [], // list_sessions 结果
-  running: false, // 是否有进行中的轮次
-  currentTurnId: null, // 进行中轮次的 turnId
+  sessions: [], // list_sessions 结果（历史会话）
+  live: [], // list_live 结果（在线会话）
+  running: false, // 是否有进行中的 CLI 轮次（live 模式无轮次概念）
+  currentTurnId: null, // 进行中 CLI 轮次的 turnId
   newSessionId: null, // 「新会话」首轮返回的 session id，后续消息续接它
   assistantEl: null, // 当前轮次的助手气泡（文本块追加于此）
 };
@@ -79,9 +82,10 @@ function projectName(cwd) {
 async function loadSessions() {
   sessionSelect.innerHTML = '<option value="">加载会话中…</option>';
   try {
-    const { promise } = chatRequest('list_sessions');
-    const sessions = await promise;
-    chatState.sessions = sessions ?? [];
+    const liveReq = chatRequest('list_live');
+    const histReq = chatRequest('list_sessions');
+    chatState.live = (await liveReq.promise) ?? [];
+    chatState.sessions = (await histReq.promise) ?? [];
     renderSessionOptions();
   } catch (err) {
     sessionSelect.innerHTML = `<option value="">加载失败：${escapeText(err.message)}</option>`;
@@ -90,29 +94,54 @@ async function loadSessions() {
 
 function renderSessionOptions() {
   sessionSelect.innerHTML = '';
+
+  // 在线会话：实时对接正在监听的 CC 会话（无需 CLI 登录态）
+  if (chatState.live.length > 0) {
+    const liveGroup = document.createElement('optgroup');
+    liveGroup.label = '🟢 在线会话（实时）';
+    for (const l of chatState.live) {
+      const opt = document.createElement('option');
+      opt.value = `${LIVE_PREFIX}${l.key}`;
+      opt.textContent = `🟢 ${l.label}`;
+      liveGroup.appendChild(opt);
+    }
+    sessionSelect.appendChild(liveGroup);
+  }
+
+  const histGroup = document.createElement('optgroup');
+  histGroup.label = '历史会话（headless CLI）';
   const newOpt = document.createElement('option');
   newOpt.value = NEW_SESSION_VALUE;
   newOpt.textContent = '＋ 新会话（选择项目）';
-  sessionSelect.appendChild(newOpt);
-
+  histGroup.appendChild(newOpt);
   for (const s of chatState.sessions) {
     const opt = document.createElement('option');
     opt.value = s.sessionId;
     opt.textContent = `[${projectName(s.cwd)}] ${s.title} · ${formatTime(s.mtime)}`;
-    sessionSelect.appendChild(opt);
+    histGroup.appendChild(opt);
   }
+  sessionSelect.appendChild(histGroup);
 
-  // 默认选中最近一个已有会话
-  if (chatState.sessions.length > 0) {
+  // 默认选中：在线会话优先，其次最近历史会话
+  if (chatState.live.length > 0) {
+    sessionSelect.value = `${LIVE_PREFIX}${chatState.live[0].key}`;
+  } else if (chatState.sessions.length > 0) {
     sessionSelect.value = chatState.sessions[0].sessionId;
   }
   syncProjectRow();
 }
 
-/** 新会话时显示项目选择（从已有会话的 cwd 去重而来） */
+/** 新会话时显示项目选择（从已有会话的 cwd 去重而来）；在线会话隐藏权限选择 */
 function syncProjectRow() {
   const isNew = sessionSelect.value === NEW_SESSION_VALUE;
+  const isLive = sessionSelect.value.startsWith(LIVE_PREFIX);
   projectRow.classList.toggle('hidden', !isNew);
+  // 在线会话的权限由该 CC 会话自身的交互确认机制管理，面板选择不生效
+  permissionSelect.parentElement.classList.toggle('hidden', isLive);
+  bypassWarn.classList.toggle(
+    'hidden',
+    isLive || permissionSelect.value !== 'bypassPermissions',
+  );
   if (!isNew) return;
 
   const cwds = [...new Set(chatState.sessions.map((s) => s.cwd).filter(Boolean))];
@@ -167,6 +196,16 @@ function appendSystem(text) {
 // ------------------------- 流事件处理 -------------------------
 
 function handleStreamEvent(turnId, event) {
+  // 在线会话的推送：无轮次生命周期，随时渲染（system 提示 / 回复文本）
+  if (turnId.startsWith(LIVE_PREFIX)) {
+    if (event.kind === 'system') {
+      appendSystem(event.message);
+    } else if (event.kind === 'text') {
+      appendBubble('assistant', event.text);
+    }
+    return;
+  }
+
   if (turnId !== chatState.currentTurnId) return; // 过期轮次的残留事件
 
   switch (event.kind) {
@@ -219,6 +258,9 @@ function finishTurn() {
 /** 解析当前选择，得到 send 参数；不合法时返回 null 并提示 */
 function resolveSendTarget() {
   const selected = sessionSelect.value;
+  if (selected.startsWith(LIVE_PREFIX)) {
+    return { mode: 'live', key: selected.slice(LIVE_PREFIX.length) };
+  }
   if (selected === NEW_SESSION_VALUE) {
     // 新会话：首轮不带 sessionId；后续轮次续接返回的 id
     const cwd = projectSelect.value;
@@ -248,6 +290,19 @@ async function sendMessage() {
   if (!message) return;
   const target = resolveSendTarget();
   if (!target) return;
+
+  // 在线会话：投递即回，无轮次状态；回复由 live 流事件随时渲染
+  if (target.mode === 'live') {
+    const { promise } = chatRequest('send', { ...target, message });
+    appendBubble('user', message);
+    chatInput.value = '';
+    try {
+      await promise;
+    } catch (err) {
+      appendSystem(`✗ ${err.message}`);
+    }
+    return;
+  }
 
   const { id, promise } = chatRequest('send', {
     ...target,

@@ -18,8 +18,9 @@ import { BridgeWsServer } from './ws-server.js';
 import { IpcServer } from './ipc-server.js';
 import { IpcProxy } from './ipc-proxy.js';
 import { ChatHandler } from './chat-handler.js';
+import { ChatHub } from './chat-hub.js';
 import { createMcpServer } from './mcp-server.js';
-import { BridgeBackend, PORT_RANGE_START, PORT_RANGE_END } from './protocol.js';
+import { BridgeBackend, BridgeMethod, PORT_RANGE_START, PORT_RANGE_END } from './protocol.js';
 
 const TOKEN = process.env.BRIDGE_TOKEN ?? 'local-dev-token';
 
@@ -52,25 +53,38 @@ async function tryProxyMode(): Promise<BridgeBackend | null> {
   }
 }
 
-/** 以 Primary 模式启动：创建 WS server + IPC server */
+/** 以 Primary 模式启动：创建 WS server + IPC server + 聊天中枢 */
 async function startPrimaryMode(): Promise<BridgeBackend> {
   const ws = await BridgeWsServer.create(candidatePorts(), TOKEN);
   ws.onEvent((event, payload) => log('extension event:', event, JSON.stringify(payload)));
   log(`Primary 模式：WS server 监听 ws://127.0.0.1:${ws.port}（token=${TOKEN}）`);
   log('等待 Chrome 扩展连接…');
 
-  const ipc = new IpcServer(ws);
+  // 在线会话中枢：chat_listen/chat_reply 在 Primary 本地处理，不经 extension
+  const hub = new ChatHub((msg) => ws.pushChat(msg));
+  const backend: BridgeBackend = {
+    request: (method: BridgeMethod, params: Record<string, unknown> = {}) =>
+      method === 'chat_listen' || method === 'chat_reply'
+        ? hub.handle(method, params)
+        : ws.request(method, params),
+    get connected() {
+      return ws.connected;
+    },
+    onEvent: (listener) => ws.onEvent(listener),
+  };
+
+  const ipc = new IpcServer(backend);
   await ipc.start();
   log('IPC server 已就绪，等待 Proxy 连接');
 
   // 侧边栏聊天：仅 Primary 处理（chat_request 经 WS 反向到达）
-  const chat = new ChatHandler((msg) => ws.pushChat(msg));
+  const chat = new ChatHandler((msg) => ws.pushChat(msg), hub);
   ws.onChatRequest((msg) => {
     void chat.handle(msg);
   });
   log('Chat handler 已就绪（侧边栏可对接 CC 会话）');
 
-  return ws;
+  return backend;
 }
 
 async function main(): Promise<void> {
