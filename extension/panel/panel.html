@@ -12,29 +12,69 @@
       <div id="status" class="status status--unknown">未知</div>
     </header>
 
-    <section class="config">
-      <label class="field">
-        <span>端口</span>
-        <input type="text" value="自动扫描 12345-12350" disabled />
-      </label>
-      <label class="field">
-        <span>Token</span>
-        <input id="token" type="text" />
-      </label>
-      <div class="actions">
-        <button id="save" class="btn btn--primary">保存并重连</button>
-        <button id="stop" class="btn btn--danger">紧急停止</button>
+    <nav class="tabs">
+      <button id="tabBtnChat" class="tab tab--active">聊天</button>
+      <button id="tabBtnStatus" class="tab">状态</button>
+    </nav>
+
+    <!-- ==================== 聊天 Tab ==================== -->
+    <section id="tabChat" class="tab-page">
+      <div class="chat-config">
+        <div class="row">
+          <select id="sessionSelect" class="select select--grow">
+            <option value="">加载会话中…</option>
+          </select>
+          <button id="refreshSessions" class="btn btn--ghost" title="刷新会话列表">⟳</button>
+        </div>
+        <div id="projectRow" class="row hidden">
+          <select id="projectSelect" class="select select--grow"></select>
+        </div>
+        <div class="row">
+          <select id="permissionSelect" class="select select--grow">
+            <option value="default">权限：默认（沿用已授权工具）</option>
+            <option value="acceptEdits">权限：acceptEdits（自动批准编辑）</option>
+            <option value="bypassPermissions">权限：bypass（全部自动批准）</option>
+          </select>
+        </div>
+        <p id="bypassWarn" class="warn hidden">⚠ bypass 模式下浏览器内容可触发任意命令执行，仅在可信环境使用</p>
+        <p class="hint">提示：对正在终端中使用的会话发消息，可能造成历史分叉</p>
+      </div>
+
+      <div id="messages" class="messages"></div>
+
+      <div class="composer">
+        <textarea id="chatInput" rows="3" placeholder="给该会话发消息…（Cmd+Enter 发送）"></textarea>
+        <button id="chatSend" class="btn btn--primary">发送</button>
       </div>
     </section>
 
-    <section class="log">
-      <div class="log__head">
-        <span>动作日志</span>
-        <button id="clear" class="btn btn--ghost">清空</button>
-      </div>
-      <ul id="logList" class="log__list"></ul>
+    <!-- ==================== 状态 Tab ==================== -->
+    <section id="tabStatus" class="tab-page hidden">
+      <section class="config">
+        <label class="field">
+          <span>端口</span>
+          <input type="text" value="自动扫描 12345-12350" disabled />
+        </label>
+        <label class="field">
+          <span>Token</span>
+          <input id="token" type="text" />
+        </label>
+        <div class="actions">
+          <button id="save" class="btn btn--primary">保存并重连</button>
+          <button id="stop" class="btn btn--danger">紧急停止</button>
+        </div>
+      </section>
+
+      <section class="log">
+        <div class="log__head">
+          <span>动作日志</span>
+          <button id="clear" class="btn btn--ghost">清空</button>
+        </div>
+        <ul id="logList" class="log__list"></ul>
+      </section>
     </section>
 
     <script src="panel.js"></script>
+    <script src="chat.js"></script>
   </body>
 </html>

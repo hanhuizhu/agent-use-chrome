@@ -53,8 +53,68 @@ export interface PongMessage {
   type: 'pong';
 }
 
-export type ExtensionToBridge = ResponseMessage | EventMessage | PingMessage | PongMessage;
-export type BridgeToExtension = RequestMessage | PingMessage | PongMessage;
+// ------------------------- 侧边栏 Chat（extension -> bridge 反向请求） -------------------------
+
+/** 侧边栏聊天操作方法名 */
+export type ChatMethod = 'list_sessions' | 'send' | 'cancel';
+
+/** extension -> bridge：侧边栏发起的聊天请求 */
+export interface ChatRequestMessage {
+  type: 'chat_request';
+  id: string;
+  method: ChatMethod;
+  params: Record<string, unknown>;
+}
+
+/** bridge -> extension：聊天请求的应答 */
+export interface ChatResponseMessage {
+  type: 'chat_response';
+  id: string;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+}
+
+/** 聊天轮次的流式事件（由 claude CLI stream-json 精简而来） */
+export type ChatStreamEvent =
+  | { kind: 'text'; text: string } // assistant 文本块
+  | { kind: 'tool_use'; name: string; summary: string } // 工具调用（面板折叠显示）
+  | {
+      kind: 'result'; // 轮次结束
+      ok: boolean;
+      sessionId?: string;
+      costUsd?: number;
+      durationMs?: number;
+    }
+  | { kind: 'error'; message: string }; // 失败/取消
+
+/** bridge -> extension：聊天轮次的流式推送 */
+export interface ChatStreamMessage {
+  type: 'chat_stream';
+  turnId: string;
+  event: ChatStreamEvent;
+}
+
+/** 会话列表条目（list_sessions 返回） */
+export interface ChatSessionInfo {
+  sessionId: string;
+  cwd: string; // 会话所属项目目录
+  title: string; // 首条用户消息/摘要，截断
+  mtime: number; // 最后活跃时间戳（毫秒）
+}
+
+export type ExtensionToBridge =
+  | ResponseMessage
+  | EventMessage
+  | ChatRequestMessage
+  | PingMessage
+  | PongMessage;
+export type BridgeToExtension =
+  | RequestMessage
+  | ChatResponseMessage
+  | ChatStreamMessage
+  | PingMessage
+  | PongMessage;
 
 /** 截图结果结构（extension 回传） */
 export interface ScreenshotResult {
@@ -73,3 +133,62 @@ export const HEARTBEAT_INTERVAL_MS = 20_000;
 
 /** 单次操作请求的默认超时（毫秒） */
 export const REQUEST_TIMEOUT_MS = 30_000;
+
+/** IPC Unix socket 路径：Primary 监听，Proxy 连接 */
+export const IPC_SOCKET_PATH = '/tmp/agent-use-chrome-bridge.sock';
+
+/**
+ * Bridge 后端统一接口
+ *
+ * Primary 模式由 BridgeWsServer 实现（直连 extension），
+ * Proxy 模式由 IpcProxy 实现（通过 IPC 转发到 Primary）。
+ * MCP server 不感知自身运行模式。
+ */
+export interface BridgeBackend {
+  /** 向 extension 发起一次操作请求 */
+  request(method: BrowserMethod, params?: Record<string, unknown>): Promise<unknown>;
+  /** extension 是否已连接（Proxy 模式下反映 Primary 的连接状态） */
+  readonly connected: boolean;
+  /** 注册 extension 事件监听 */
+  onEvent(listener: (event: string, payload: Record<string, unknown>) => void): void;
+}
+
+/** IPC 消息类型：Proxy -> Primary */
+export interface IpcRequest {
+  type: 'ipc_request';
+  id: string;
+  method: BrowserMethod;
+  params: Record<string, unknown>;
+}
+
+/** IPC 消息类型：Primary -> Proxy */
+export interface IpcResponse {
+  type: 'ipc_response';
+  id: string;
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+}
+
+/** IPC 消息类型：Primary -> Proxy（extension 事件转发） */
+export interface IpcEvent {
+  type: 'ipc_event';
+  event: string;
+  payload: Record<string, unknown>;
+}
+
+/** IPC 消息类型：Proxy -> Primary（查询连接状态） */
+export interface IpcStatusQuery {
+  type: 'ipc_status_query';
+  id: string;
+}
+
+/** IPC 消息类型：Primary -> Proxy（连接状态回复） */
+export interface IpcStatusResponse {
+  type: 'ipc_status_response';
+  id: string;
+  connected: boolean;
+}
+
+export type IpcToPrimary = IpcRequest | IpcStatusQuery;
+export type IpcToProxy = IpcResponse | IpcEvent | IpcStatusResponse;

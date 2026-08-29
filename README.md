@@ -139,6 +139,25 @@ cp skills/chrome/SKILL.md ~/.claude/skills/chrome/
 2. 对 agent 说:「打开 https://example.com 并截图」。
 3. 浏览器自动导航,agent 返回截图 —— 链路打通。
 
+## 侧边栏聊天（对接 CC 会话）
+
+侧边栏「聊天」Tab 可以直接与 Claude Code 会话对话——插件不调度任何 LLM，CC 就是大脑：
+
+- **选会话**：下拉列出最近 30 个 CC 会话（跨项目，按活跃时间倒序），也可「＋新会话」并选择项目目录
+- **发消息**：消息经 WS 到 bridge，bridge 以 `claude --resume <id> -p <消息> --output-format stream-json` headless 执行，流式结果推回面板；聊天记录进入该会话的正式历史（之后终端 `--resume` 可接续）
+- **权限模式**：面板可切换 默认 / acceptEdits / bypassPermissions（bypass 有红色警示，慎用）
+- **停止**：进行中可随时停止（kill 子进程）
+
+```
+panel(chat) ⇄ background ⇄ WS ⇄ bridge ⇄ spawn `claude` CLI（headless）
+```
+
+注意事项：
+
+- 需要 `claude` CLI 在 PATH 中且**登录态有效**（若长期只用桌面端，CLI 的 OAuth token 可能过期，任意终端跑一次 `claude` 重新登录即可）
+- 对**正开在终端里的会话**发消息可能造成历史分叉，面板有常驻提示
+- headless 下未预授权的工具会被拒绝（默认权限模式），CC 会说明或绕过
+
 ## MCP 工具一览
 
 | 工具 | 说明 |

@@ -7,9 +7,8 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { BridgeWsServer } from './ws-server.js';
 import { parseDataUrl } from './image.js';
-import { ScreenshotResult } from './protocol.js';
+import { BridgeBackend, ScreenshotResult } from './protocol.js';
 
 type ToolResult = {
   content: Array<
@@ -35,7 +34,7 @@ async function run(fn: () => Promise<ToolResult>): Promise<ToolResult> {
   }
 }
 
-export function createMcpServer(ws: BridgeWsServer): McpServer {
+export function createMcpServer(ws: BridgeBackend): McpServer {
   const server = new McpServer({
     name: 'agent-use-chrome',
     version: '0.1.0',

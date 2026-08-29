@@ -12,7 +12,11 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
 import {
+  BridgeBackend,
   BrowserMethod,
+  ChatRequestMessage,
+  ChatResponseMessage,
+  ChatStreamMessage,
   ExtensionToBridge,
   RequestMessage,
   HEARTBEAT_INTERVAL_MS,
@@ -26,13 +30,15 @@ interface PendingRequest {
 }
 
 type EventListener = (event: string, payload: Record<string, unknown>) => void;
+type ChatRequestListener = (msg: ChatRequestMessage) => void;
 
-export class BridgeWsServer {
+export class BridgeWsServer implements BridgeBackend {
   private wss: WebSocketServer;
   private socket: WebSocket | null = null;
   private pending = new Map<string, PendingRequest>();
   private heartbeat: NodeJS.Timeout | null = null;
   private eventListeners: EventListener[] = [];
+  private chatRequestListener: ChatRequestListener | null = null;
 
   /** 实际绑定成功的端口 */
   readonly port: number;
@@ -90,6 +96,16 @@ export class BridgeWsServer {
   /** 注册扩展事件监听（tab_changed / navigated / detached） */
   onEvent(listener: EventListener): void {
     this.eventListeners.push(listener);
+  }
+
+  /** 注册侧边栏聊天请求监听（chat_request） */
+  onChatRequest(listener: ChatRequestListener): void {
+    this.chatRequestListener = listener;
+  }
+
+  /** 向扩展推送聊天应答/流事件 */
+  pushChat(msg: ChatResponseMessage | ChatStreamMessage): void {
+    this.send(msg);
   }
 
   private onConnection(ws: WebSocket, url: string): void {
@@ -152,6 +168,10 @@ export class BridgeWsServer {
         for (const listener of this.eventListeners) {
           listener(msg.event, msg.payload);
         }
+        break;
+      }
+      case 'chat_request': {
+        this.chatRequestListener?.(msg);
         break;
       }
       case 'ping': {

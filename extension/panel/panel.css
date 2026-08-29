@@ -145,3 +145,144 @@ body {
   color: var(--muted);
   margin-right: 6px;
 }
+
+/* ------------------------- Tabs ------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 6px 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.tab--active {
+  color: var(--text);
+  border-bottom-color: var(--primary);
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ------------------------- 聊天 Tab ------------------------- */
+
+#tabChat {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 110px);
+}
+
+.chat-config .row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.select--grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.warn {
+  color: var(--danger);
+  font-size: 12px;
+  margin: 2px 0 6px;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 2px 0 8px;
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.msg {
+  max-width: 92%;
+  padding: 7px 10px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.msg--user {
+  align-self: flex-end;
+  background: var(--primary);
+  color: #fff;
+}
+
+.msg--assistant {
+  align-self: flex-start;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+
+.msg--tool {
+  align-self: flex-start;
+  color: var(--muted);
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg--system {
+  align-self: center;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
+.composer {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.composer textarea {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 40px;
+}

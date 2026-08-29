@@ -192,6 +192,11 @@ async function handleMessage(raw) {
   if (msg.type === 'pong') {
     return;
   }
+  // 聊天应答/流事件：转发给侧边栏
+  if (msg.type === 'chat_response' || msg.type === 'chat_stream') {
+    broadcastToChatPorts(msg);
+    return;
+  }
   if (msg.type !== 'request') {
     return;
   }
@@ -522,6 +527,45 @@ async function doGetState() {
   const tab = await getActiveTab();
   return { url: tab.url, title: tab.title, status: tab.status };
 }
+
+// ------------------------- 侧边栏聊天中继 -------------------------
+
+/** 已连接的侧边栏聊天端口（长连接，支持流式推送） */
+const chatPorts = new Set();
+
+function broadcastToChatPorts(msg) {
+  for (const port of chatPorts) {
+    try {
+      port.postMessage(msg);
+    } catch {
+      chatPorts.delete(port);
+    }
+  }
+}
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'chat') {
+    return;
+  }
+  chatPorts.add(port);
+  port.onDisconnect.addListener(() => chatPorts.delete(port));
+  // 面板 -> WS：透传 chat_request；bridge 未连接时立即回错误
+  port.onMessage.addListener((msg) => {
+    if (!msg || msg.type !== 'chat_request') {
+      return;
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      port.postMessage({
+        type: 'chat_response',
+        id: msg.id,
+        ok: false,
+        error: 'bridge 未连接，请先在「状态」页确认连接',
+      });
+      return;
+    }
+    sendRaw(msg);
+  });
+});
 
 // ------------------------- 生命周期 & 清理 -------------------------
 

@@ -9,6 +9,24 @@ const statusEl = document.getElementById('status');
 const tokenEl = document.getElementById('token');
 const logList = document.getElementById('logList');
 
+// ------------------------- Tab 切换 -------------------------
+
+const tabBtnChat = document.getElementById('tabBtnChat');
+const tabBtnStatus = document.getElementById('tabBtnStatus');
+const tabChat = document.getElementById('tabChat');
+const tabStatus = document.getElementById('tabStatus');
+
+function switchTab(target) {
+  const isChat = target === 'chat';
+  tabBtnChat.classList.toggle('tab--active', isChat);
+  tabBtnStatus.classList.toggle('tab--active', !isChat);
+  tabChat.classList.toggle('hidden', !isChat);
+  tabStatus.classList.toggle('hidden', isChat);
+}
+
+tabBtnChat.addEventListener('click', () => switchTab('chat'));
+tabBtnStatus.addEventListener('click', () => switchTab('status'));
+
 const MAX_LOG = 200;
 const STATUS_POLL_MS = 2000; // 状态轮询间隔：避免打开瞬间的竞态导致长期误显示「未连接」
 
