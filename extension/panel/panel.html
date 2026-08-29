@@ -40,12 +40,12 @@
         <label class="field">
           <span>权限模式（headless 执行）</span>
           <select id="permissionSelect" class="select">
-            <option value="default">默认（沿用已授权工具）</option>
-            <option value="acceptEdits">acceptEdits（自动批准编辑）</option>
             <option value="bypassPermissions">bypass（全部自动批准）</option>
+            <option value="acceptEdits">acceptEdits（自动批准编辑）</option>
+            <option value="default">默认（沿用已授权工具）</option>
           </select>
         </label>
-        <p id="bypassWarn" class="warn hidden">⚠ bypass 模式下浏览器内容可触发任意命令执行，仅在可信环境使用</p>
+        <p id="bypassWarn" class="warn">⚠ bypass 模式下浏览器内容可触发任意命令执行，仅在可信环境使用</p>
         <p class="hint">对正在终端中使用的会话发消息，可能造成历史分叉</p>
       </div>
 
