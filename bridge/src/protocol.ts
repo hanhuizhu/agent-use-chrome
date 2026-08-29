@@ -77,8 +77,10 @@ export interface ChatResponseMessage {
 
 /** 聊天轮次的流式事件（由 claude CLI stream-json 精简而来） */
 export type ChatStreamEvent =
-  | { kind: 'text'; text: string } // assistant 文本块
-  | { kind: 'tool_use'; name: string; summary: string } // 工具调用（面板折叠显示）
+  | { kind: 'text_delta'; text: string } // 流式文本增量（--include-partial-messages）
+  | { kind: 'text'; text: string } // assistant 整块文本（对增量「定稿」）
+  | { kind: 'tool_use'; name: string; summary: string } // 工具调用（面板折叠卡片）
+  | { kind: 'turn_start' } // 排队消息开始执行
   | {
       kind: 'result'; // 轮次结束
       ok: boolean;
@@ -87,7 +89,7 @@ export type ChatStreamEvent =
       durationMs?: number;
     }
   | { kind: 'error'; message: string } // 失败/取消
-  | { kind: 'system'; message: string }; // 系统提示（在线会话连接等）
+  | { kind: 'system'; message: string }; // 系统提示
 
 /** bridge -> extension：聊天轮次的流式推送 */
 export interface ChatStreamMessage {

@@ -272,11 +272,26 @@ export function mapStreamJsonLine(line: string): ChatStreamEvent[] | null {
         events.push({
           kind: 'tool_use',
           name: block.name,
-          summary: input.length > 120 ? `${input.slice(0, 120)}…` : input,
+          summary: input.length > 600 ? `${input.slice(0, 600)}…` : input,
         });
       }
     }
     return events.length ? events : null;
+  }
+
+  // --include-partial-messages 产生的流式增量：只关心文本 delta
+  if (obj.type === 'stream_event') {
+    const ev = obj.event as
+      | { type?: string; delta?: { type?: string; text?: string } }
+      | undefined;
+    if (
+      ev?.type === 'content_block_delta' &&
+      ev.delta?.type === 'text_delta' &&
+      typeof ev.delta.text === 'string'
+    ) {
+      return [{ kind: 'text_delta', text: ev.delta.text }];
+    }
+    return null;
   }
 
   if (obj.type === 'result') {
