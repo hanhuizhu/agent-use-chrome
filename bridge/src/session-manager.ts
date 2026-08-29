@@ -1,9 +1,10 @@
 /**
- * session-manager：Claude Code 会话发现 + headless 轮次执行
+ * session-manager：Claude Code 会话发现 + headless 轮次执行（带队列）
  *
  * - listSessions()：扫描 ~/.claude/projects/<编码目录>/*.jsonl，解析会话元信息
- * - runTurn()：spawn `claude --resume <id> -p <msg> --output-format stream-json`，
- *   把流式事件精简后回调给上层（转发到侧边栏）
+ * - send()：spawn `claude --resume <id> -p <msg> --output-format stream-json
+ *   --include-partial-messages` 执行一轮；忙碌时入队，轮次结束后自动续发
+ * - cancel()：终止当前轮次并清空队列
  *
  * 注意：stdout 被 MCP stdio 占用，日志走 stderr。
  */
@@ -32,12 +33,26 @@ export interface RunTurnParams {
   permissionMode: string;
 }
 
+/** send() 的即时返回：立即执行 or 排队 */
+export type SendResult = { started: true } | { queued: true; position: number };
+
+interface PendingTurn {
+  turnId: string;
+  params: RunTurnParams;
+  emit: (ev: ChatStreamEvent) => void;
+}
+
 export class SessionManager {
   private claudeBin: string | null;
+  private spawnImpl: typeof spawn;
   private running: { turnId: string; child: ChildProcess } | null = null;
+  private queue: PendingTurn[] = [];
+  /** 本轮忙碌链中新会话产生的 id：排队的「新会话」消息出队时续接它；空闲后清空 */
+  private chainSessionId: string | null = null;
 
-  constructor() {
-    this.claudeBin = resolveClaudeBin();
+  constructor(opts: { spawnImpl?: typeof spawn; claudeBin?: string | null } = {}) {
+    this.spawnImpl = opts.spawnImpl ?? spawn;
+    this.claudeBin = 'claudeBin' in opts ? (opts.claudeBin ?? null) : resolveClaudeBin();
   }
 
   /** 列出最近的 CC 会话（按最后活跃时间倒序） */
@@ -81,38 +96,45 @@ export class SessionManager {
     return sessions;
   }
 
-  /**
-   * 执行一次 headless 轮次，流式事件通过 onEvent 回调。
-   * 全局同一时间只允许一个进行中轮次。
-   */
-  runTurn(turnId: string, params: RunTurnParams, onEvent: (ev: ChatStreamEvent) => void): void {
+  /** 面板发消息：空闲立即执行，忙碌入队（轮次结束后自动续发） */
+  send(turnId: string, params: RunTurnParams, emit: (ev: ChatStreamEvent) => void): SendResult {
     this.assertClaudeAvailable();
-    if (this.running) {
-      throw new Error('已有进行中的对话轮次，请等待完成或先停止');
-    }
     if (!PERMISSION_MODES.has(params.permissionMode)) {
       throw new Error(`不支持的权限模式：${params.permissionMode}`);
     }
     if (!params.message?.trim()) {
       throw new Error('消息不能为空');
     }
+    if (this.running) {
+      this.queue.push({ turnId, params, emit });
+      return { queued: true, position: this.queue.length };
+    }
+    this.runTurn({ turnId, params, emit });
+    return { started: true };
+  }
 
+  /** 执行一次 headless 轮次，流式事件通过 turn.emit 回调 */
+  private runTurn(turn: PendingTurn): void {
+    // 新会话消息（无 sessionId）续接同一忙碌链中已产生的会话 id
+    const sessionId = turn.params.sessionId ?? this.chainSessionId ?? undefined;
+    const isNewSession = !turn.params.sessionId;
     const args = [
-      ...(params.sessionId ? ['--resume', params.sessionId] : []),
+      ...(sessionId ? ['--resume', sessionId] : []),
       '-p',
-      params.message,
+      turn.params.message,
       '--output-format',
       'stream-json',
       '--verbose', // stream-json + --print 必需
+      '--include-partial-messages', // 文本增量流式推送
       '--permission-mode',
-      params.permissionMode,
+      turn.params.permissionMode,
     ];
 
-    const child = spawn(this.claudeBin as string, args, {
-      cwd: params.cwd,
+    const child = this.spawnImpl(this.claudeBin as string, args, {
+      cwd: turn.params.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    this.running = { turnId, child };
+    this.running = { turnId: turn.turnId, child };
 
     let gotResult = false;
     const stderrTail: string[] = [];
@@ -122,8 +144,11 @@ export class SessionManager {
       const events = mapStreamJsonLine(line);
       if (!events) return;
       for (const ev of events) {
-        if (ev.kind === 'result') gotResult = true;
-        onEvent(ev);
+        if (ev.kind === 'result') {
+          gotResult = true;
+          if (isNewSession && ev.sessionId) this.chainSessionId = ev.sessionId;
+        }
+        turn.emit(ev);
       }
     });
 
@@ -134,28 +159,48 @@ export class SessionManager {
 
     child.on('error', (err) => {
       this.running = null;
-      onEvent({ kind: 'error', message: `claude 进程启动失败：${err.message}` });
+      turn.emit({ kind: 'error', message: `claude 进程启动失败：${err.message}` });
+      this.drainQueue();
     });
 
     child.on('close', (code, signal) => {
       this.running = null;
       if (signal === 'SIGTERM' || signal === 'SIGKILL') {
-        onEvent({ kind: 'error', message: '已取消' });
-        return;
-      }
-      if (!gotResult) {
+        turn.emit({ kind: 'error', message: '已取消' });
+      } else if (!gotResult) {
         const detail = stderrTail.join('').trim().slice(-500);
-        onEvent({
+        turn.emit({
           kind: 'error',
-          message: `claude 退出（code=${code}）未返回结果${detail ? `：${detail}` : ''}`,
+          message: `claude 退出（code=${code}）未返回结果${
+            detail ? `：${detail}` : ''
+          }（若提示 OAuth 过期，请在终端运行一次 claude 重新登录）`,
         });
       }
+      this.drainQueue();
     });
   }
 
-  /** 取消进行中的轮次 */
+  /** 取队首继续执行；队列空则结束忙碌链 */
+  private drainQueue(): void {
+    const next = this.queue.shift();
+    if (!next) {
+      this.chainSessionId = null;
+      return;
+    }
+    next.emit({ kind: 'turn_start' });
+    this.runTurn(next);
+  }
+
+  /** 停止：终止当前轮次并清空队列 */
   cancel(): boolean {
-    if (!this.running) return false;
+    const cleared = this.queue.splice(0);
+    for (const t of cleared) {
+      t.emit({ kind: 'error', message: '已取消' });
+    }
+    if (!this.running) {
+      this.chainSessionId = null;
+      return cleared.length > 0;
+    }
     this.running.child.kill('SIGTERM');
     return true;
   }

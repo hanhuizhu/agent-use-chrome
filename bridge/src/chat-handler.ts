@@ -31,12 +31,11 @@ export class ChatHandler {
       case 'list_sessions':
         return this.sessions.listSessions();
       case 'send': {
-        // headless CLI 轮次，turnId 用请求 id
+        // headless CLI 轮次，turnId 用请求 id；忙碌时排队（返回 queued + position）
         const params = msg.params as unknown as RunTurnParams;
-        this.sessions.runTurn(msg.id, params, (event) => {
+        return this.sessions.send(msg.id, params, (event) => {
           this.push({ type: 'chat_stream', turnId: msg.id, event });
         });
-        return { started: true };
       }
       case 'cancel':
         return { cancelled: this.sessions.cancel() };
