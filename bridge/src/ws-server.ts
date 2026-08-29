@@ -13,7 +13,6 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
 import {
   BridgeBackend,
-  BridgeMethod,
   BrowserMethod,
   ChatRequestMessage,
   ChatResponseMessage,
@@ -186,8 +185,8 @@ export class BridgeWsServer implements BridgeBackend {
     }
   }
 
-  /** 向扩展发起一次操作请求，返回结果（或抛出错误）；chat_* 方法不在此处理 */
-  async request(method: BridgeMethod, params: Record<string, unknown> = {}): Promise<unknown> {
+  /** 向扩展发起一次操作请求，返回结果（或抛出错误） */
+  async request(method: BrowserMethod, params: Record<string, unknown> = {}): Promise<unknown> {
     if (!this.connected || !this.socket) {
       throw new Error(
         'Chrome 扩展未连接。请确认：1) 扩展已加载并在侧边栏显示「已连接」；2) token/端口一致。',
@@ -195,8 +194,7 @@ export class BridgeWsServer implements BridgeBackend {
     }
 
     const id = randomUUID();
-    // chat_* 由 Primary 的 ChatHub 处理，不会到达这里；此处只会收到 BrowserMethod
-    const message: RequestMessage = { type: 'request', id, method: method as BrowserMethod, params };
+    const message: RequestMessage = { type: 'request', id, method, params };
 
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {

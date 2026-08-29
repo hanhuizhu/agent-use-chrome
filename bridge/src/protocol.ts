@@ -56,26 +56,7 @@ export interface PongMessage {
 // ------------------------- 侧边栏 Chat（extension -> bridge 反向请求） -------------------------
 
 /** 侧边栏聊天操作方法名 */
-export type ChatMethod = 'list_sessions' | 'list_live' | 'send' | 'cancel';
-
-/**
- * 桥内聊天方法（agent 侧经 MCP 工具调用，Primary 的 ChatHub 处理）：
- * - chat_listen：长轮询取侧边栏消息（在线会话的核心机制）
- * - chat_reply：把回复推送到侧边栏
- */
-export type ChatBridgeMethod = 'chat_listen' | 'chat_reply';
-
-/** BridgeBackend 可承载的全部方法 */
-export type BridgeMethod = BrowserMethod | ChatBridgeMethod;
-
-/** chat_listen 长轮询挂起时长：需小于 IPC/WS 请求超时（30s），留出传输余量 */
-export const LISTEN_TIMEOUT_MS = 25_000;
-
-/** 在线会话条目（list_live 返回） */
-export interface ChatLiveListener {
-  key: string; // 会话标识（CC session id 或 pid）
-  label: string; // 展示名：项目名 · 会话短 id
-}
+export type ChatMethod = 'list_sessions' | 'send' | 'cancel';
 
 /** extension -> bridge：侧边栏发起的聊天请求 */
 export interface ChatRequestMessage {
@@ -165,8 +146,8 @@ export const IPC_SOCKET_PATH = '/tmp/agent-use-chrome-bridge.sock';
  * MCP server 不感知自身运行模式。
  */
 export interface BridgeBackend {
-  /** 发起一次操作请求：browser_* 转发给 extension，chat_* 由 Primary 的 ChatHub 处理 */
-  request(method: BridgeMethod, params?: Record<string, unknown>): Promise<unknown>;
+  /** 发起一次浏览器操作请求，转发给 extension 执行 */
+  request(method: BrowserMethod, params?: Record<string, unknown>): Promise<unknown>;
   /** extension 是否已连接（Proxy 模式下反映 Primary 的连接状态） */
   readonly connected: boolean;
   /** 注册 extension 事件监听 */
@@ -177,7 +158,7 @@ export interface BridgeBackend {
 export interface IpcRequest {
   type: 'ipc_request';
   id: string;
-  method: BridgeMethod;
+  method: BrowserMethod;
   params: Record<string, unknown>;
 }
 

@@ -7,7 +7,6 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { basename } from 'node:path';
 import { parseDataUrl } from './image.js';
 import { BridgeBackend, ScreenshotResult } from './protocol.js';
 
@@ -163,32 +162,6 @@ export function createMcpServer(ws: BridgeBackend): McpServer {
     '获取当前活动标签的 URL、标题、加载状态。',
     {},
     async () => run(async () => textResult(await ws.request('get_state', {}))),
-  );
-
-  // ---------------- 侧边栏在线聊天（listen/reply） ----------------
-
-  // 会话身份：bridge 由 CC 拉起，继承其 session id；label 用项目名 + 短 id
-  const sessionKey = process.env.CLAUDE_CODE_SESSION_ID ?? `pid-${process.pid}`;
-  const sessionLabel = `${basename(process.cwd())} · ${sessionKey.slice(0, 8)}`;
-
-  server.tool(
-    'chat_listen',
-    '监听浏览器侧边栏发来的用户消息（长轮询约 25s）。返回 {messages: [...]}；空数组表示暂无消息，应立即再次调用继续等待。进入「浏览器聊天模式」后循环调用本工具。',
-    {},
-    async () =>
-      run(async () =>
-        textResult(await ws.request('chat_listen', { key: sessionKey, label: sessionLabel })),
-      ),
-  );
-
-  server.tool(
-    'chat_reply',
-    '把回复文本推送到浏览器侧边栏聊天面板。处理完 chat_listen 收到的消息后必须调用本工具回复，否则用户在面板上看不到任何结果。',
-    {
-      text: z.string().describe('回复内容（纯文本，面板按原样渲染）'),
-    },
-    async ({ text }) =>
-      run(async () => textResult(await ws.request('chat_reply', { key: sessionKey, text }))),
   );
 
   return server;
