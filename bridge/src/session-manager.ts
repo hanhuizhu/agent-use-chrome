@@ -18,6 +18,7 @@ import {
   ChatHistoryEntry,
   ChatHistoryResult,
   ChatSessionInfo,
+  ChatStatusResult,
   ChatStreamEvent,
 } from './protocol.js';
 
@@ -53,7 +54,12 @@ interface PendingTurn {
 export class SessionManager {
   private claudeBin: string | null;
   private spawnImpl: typeof spawn;
-  private running: { turnId: string; child: ChildProcess } | null = null;
+  private running: {
+    turnId: string;
+    child: ChildProcess;
+    sessionId: string | null; // 新会话轮次在 result 前为 null
+    message: string;
+  } | null = null;
   private queue: PendingTurn[] = [];
   /** 本轮忙碌链中新会话产生的 id：排队的「新会话」消息出队时续接它；空闲后清空 */
   private chainSessionId: string | null = null;
@@ -142,7 +148,12 @@ export class SessionManager {
       cwd: turn.params.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    this.running = { turnId: turn.turnId, child };
+    this.running = {
+      turnId: turn.turnId,
+      child,
+      sessionId: sessionId ?? null,
+      message: turn.params.message,
+    };
 
     let gotResult = false;
     const stderrTail: string[] = [];
@@ -211,6 +222,24 @@ export class SessionManager {
     }
     this.running.child.kill('SIGTERM');
     return true;
+  }
+
+  /** 查询进行中/排队中的轮次（面板文档重建后据此接管显示） */
+  getStatus(): ChatStatusResult {
+    return {
+      running: this.running
+        ? {
+            turnId: this.running.turnId,
+            sessionId: this.running.sessionId,
+            message: this.running.message,
+          }
+        : null,
+      queue: this.queue.map((t) => ({
+        turnId: t.turnId,
+        sessionId: t.params.sessionId ?? this.chainSessionId ?? null,
+        message: t.params.message,
+      })),
+    };
   }
 
   /** 读取指定会话的历史消息（面板切换会话时回放），超过上限只取尾部 */

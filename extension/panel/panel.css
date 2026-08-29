@@ -577,9 +577,61 @@ body {
 /* 输入区 */
 
 .composer {
+  position: relative;
   display: flex;
   gap: 6px;
   align-items: flex-end;
+}
+
+/* 斜杠命令菜单 */
+
+.slash-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  z-index: 30;
+}
+
+.slash-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.slash-menu__item:last-child {
+  border-bottom: none;
+}
+
+.slash-menu__item--active,
+.slash-menu__item:hover {
+  background: rgba(79, 140, 255, 0.12);
+}
+
+.slash-menu__cmd {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.slash-menu__desc {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .composer textarea {
@@ -588,13 +640,13 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   color: var(--text);
-  padding: 8px 12px;
-  font-size: 13px;
+  padding: 10px 14px;
+  font-size: 14px;
   font-family: inherit;
   resize: none;
-  min-height: 34px;
-  max-height: 160px;
-  line-height: 1.5;
+  min-height: 56px;
+  max-height: 200px;
+  line-height: 1.55;
 }
 
 .composer textarea:focus {

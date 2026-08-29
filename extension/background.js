@@ -587,8 +587,18 @@ chrome.tabs.onActivated.addListener((info) => {
   sendEvent('tab_changed', { tabId: info.tabId });
 });
 
-// 点击扩展图标打开侧边栏
+// ------------------------- Side Panel per-tab 模式 -------------------------
+
+// 默认全局禁用面板：面板只在被显式打开过的 tab 上展示。
+// Chrome 原生行为：切到未启用的 tab 面板自动收起，切回已启用的 tab 自动展开。
+chrome.sidePanel.setOptions({ enabled: false }).catch(() => {});
+
+// 点击扩展图标：为当前 tab 单独启用并打开面板（不 await，保住用户手势上下文）
 chrome.action.onClicked.addListener((tab) => {
+  if (tab.id == null) return;
+  chrome.sidePanel
+    .setOptions({ tabId: tab.id, path: 'panel/panel.html', enabled: true })
+    .catch(() => {});
   chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
 });
 

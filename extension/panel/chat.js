@@ -1,5 +1,10 @@
 /**
- * chat.js —— 侧边栏「聊天」Tab
+ * chat.js —— 侧边栏「聊天」Tab（per-tab 面板实例）
+ *
+ * 面板通过 sidePanel.setOptions({ tabId }) 绑定到单个 tab：切走自动收起（文档销毁），
+ * 切回自动展开（文档重建）。因此一个面板文档只服务一个 tab，状态无需内存快照，
+ * 而是靠持久化恢复：URL -> sessionId 映射存 chrome.storage.local，
+ * 同 URL 二次打开时自动复用之前的 CC 会话并回放历史；无映射则默认「新会话」。
  *
  * 唯一通道：消息经 background -> WS -> bridge，由 bridge spawn claude CLI headless 处理。
  * bridge 全局串行执行；忙时新消息在 bridge 侧排队（气泡带「排队中」标签），
@@ -7,6 +12,7 @@
  */
 
 const NEW_SESSION_VALUE = '__new__';
+const URL_SESSION_KEY = 'urlSessionMap'; // storage key：URL -> sessionId
 
 const projectRow = document.getElementById('projectRow');
 const projectSelect = document.getElementById('projectSelect');
@@ -40,12 +46,47 @@ const chatState = {
   historySeq: 0, // 历史加载序号：快速切换会话时丢弃过期结果
 };
 
+// 本面板绑定的 tab（per-tab 模式下面板生命周期内不变）
+let panelTabId = null;
+let panelTabUrl = null; // 打开面板时的 URL（去 hash），用于会话复用查找
+
+// ------------------------- URL -> 会话 绑定 -------------------------
+
+/** 去掉 hash 的 URL 作为绑定 key（同页锚点变化视为同一页面） */
+function normalizeUrl(url) {
+  if (!url || url.startsWith('chrome://') || url.startsWith('chrome-extension://')) return null;
+  return url.split('#')[0];
+}
+
+async function getUrlSessionMap() {
+  const res = await chrome.storage.local.get([URL_SESSION_KEY]);
+  return res[URL_SESSION_KEY] ?? {};
+}
+
+/** 把当前 tab 的最新 URL 绑定到 sessionId（导航后 URL 可能已变化，绑定时实时取） */
+async function bindUrlSession(sessionId) {
+  if (!sessionId || panelTabId == null) return;
+  let url = panelTabUrl;
+  try {
+    const tab = await chrome.tabs.get(panelTabId);
+    url = normalizeUrl(tab?.url) ?? url;
+  } catch {
+    // tab 可能已关闭，退回打开面板时的 URL
+  }
+  if (!url) return;
+  const map = await getUrlSessionMap();
+  map[url] = sessionId;
+  await chrome.storage.local.set({ [URL_SESSION_KEY]: map });
+}
+
 // 自定义会话下拉（原生 select 无法美化下拉面板）
 const picker = globalThis.SessionPicker.init({
   onChange: (value) => {
     chatState.newSessionId = null; // 切换目标后重置新会话续接状态
     syncProjectRow();
     void loadHistory(value);
+    // 手动选中已有会话时也绑定到当前 URL：下次同 URL 打开直接复用
+    if (value && value !== NEW_SESSION_VALUE) void bindUrlSession(value);
   },
 });
 
@@ -108,13 +149,13 @@ async function loadSessions() {
   picker.setPlaceholder('加载会话中…');
   try {
     chatState.sessions = (await chatRequest('list_sessions').promise) ?? [];
-    renderSessionOptions();
+    await renderSessionOptions();
   } catch (err) {
     picker.setPlaceholder(`加载失败：${err.message}`);
   }
 }
 
-function renderSessionOptions() {
+async function renderSessionOptions() {
   const options = [
     { value: NEW_SESSION_VALUE, title: '＋ 新会话（选择项目）' },
     ...chatState.sessions.map((s) => ({
@@ -124,10 +165,16 @@ function renderSessionOptions() {
     })),
   ];
   picker.setOptions(options);
-  // 默认选中最近会话并回放其历史
-  if (!picker.getValue() && chatState.sessions.length > 0) {
-    picker.setValue(chatState.sessions[0].sessionId);
-    void loadHistory(picker.getValue());
+  // 默认选择：同 URL 之前绑定过会话则复用，否则默认「新会话」（每个 tab 独立起步）
+  if (!picker.getValue()) {
+    const map = await getUrlSessionMap();
+    const bound = panelTabUrl ? map[panelTabUrl] : null;
+    if (bound && chatState.sessions.some((s) => s.sessionId === bound)) {
+      picker.setValue(bound);
+      void loadHistory(bound);
+    } else {
+      picker.setValue(NEW_SESSION_VALUE);
+    }
   }
   syncProjectRow();
 }
@@ -304,17 +351,55 @@ async function loadHistory(value) {
     if (seq !== chatState.historySeq) return; // 期间又切换了会话，丢弃
     loading.remove();
     const entries = res?.entries ?? [];
-    if (entries.length === 0) return;
-    hideEmptyState();
-    if (res.truncated) appendDivider('仅显示最近 100 条');
-    for (const entry of entries) renderHistoryEntry(entry);
-    appendDivider('以上为历史消息');
-    scrollToBottom();
+    if (entries.length > 0) {
+      hideEmptyState();
+      if (res.truncated) appendDivider('仅显示最近 100 条');
+      for (const entry of entries) renderHistoryEntry(entry);
+      appendDivider('以上为历史消息');
+      scrollToBottom();
+    }
+    await adoptActiveTurns(value, entries, seq);
   } catch (err) {
     if (seq !== chatState.historySeq) return;
     loading.remove();
     appendMeta(`历史加载失败：${err.message}`, true);
   }
+}
+
+/**
+ * 面板文档重建后接管该会话进行中/排队中的轮次：
+ * 向 bridge 查询 get_status，把在跑的 turnId 注册进 turns，
+ * 后续 chat_stream 事件即可正常渲染（流式增量从接管点开始，text 定稿事件会补全整块）。
+ */
+async function adoptActiveTurns(sessionId, historyEntries, seq) {
+  let status;
+  try {
+    status = await chatRequest('get_status').promise;
+  } catch {
+    return; // 旧版 bridge 无此方法，静默跳过
+  }
+  if (seq !== chatState.historySeq) return; // 期间又切换了会话
+
+  const running = status?.running;
+  if (running && running.sessionId === sessionId && !chatState.turns.has(running.turnId)) {
+    hideEmptyState();
+    const turn = createTurn(running.turnId);
+    chatState.turns.set(running.turnId, turn);
+    // 历史里通常已含该轮的用户消息；没有才补气泡
+    const lastUser = [...historyEntries].reverse().find((e) => e.role === 'user');
+    if (lastUser?.text !== running.message) appendUserBubble(turn, running.message);
+    appendMeta('⟳ 接续进行中的轮次…');
+    showThinking(turn);
+  }
+
+  for (const [i, q] of (status?.queue ?? []).entries()) {
+    if (q.sessionId !== sessionId || chatState.turns.has(q.turnId)) continue;
+    const turn = createTurn(q.turnId);
+    chatState.turns.set(q.turnId, turn);
+    appendUserBubble(turn, q.message);
+    addQueueTag(turn, i + 1);
+  }
+  updateComposer();
 }
 
 // ------------------------- 流事件处理 -------------------------
@@ -372,6 +457,8 @@ function handleStreamEvent(turnId, event) {
       finishTurn(turn);
       if (event.sessionId && picker.getValue() === NEW_SESSION_VALUE) {
         chatState.newSessionId = event.sessionId;
+        // 新会话落地后绑定到当前 URL：同 URL 二次打开面板时复用
+        void bindUrlSession(event.sessionId);
       }
       const cost = typeof event.costUsd === 'number' ? ` · $${event.costUsd.toFixed(4)}` : '';
       const dur =
@@ -456,19 +543,12 @@ function stopAll() {
 
 function autoresize() {
   chatInput.style.height = 'auto';
-  chatInput.style.height = `${Math.min(chatInput.scrollHeight, 160)}px`;
+  chatInput.style.height = `${Math.min(chatInput.scrollHeight, 200)}px`;
 }
 
 chatSend.addEventListener('click', sendMessage);
 chatStop.addEventListener('click', stopAll);
 chatInput.addEventListener('input', autoresize);
-chatInput.addEventListener('keydown', (e) => {
-  // Enter 发送、Shift+Enter 换行；isComposing 保护中文输入法候选确认
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    sendMessage();
-  }
-});
 
 settingsToggle.addEventListener('click', () => {
   settingsPop.classList.toggle('hidden');
@@ -480,5 +560,108 @@ permissionSelect.addEventListener('change', () => {
 
 document.getElementById('refreshSessions').addEventListener('click', loadSessions);
 
-// 打开面板即加载会话列表
-loadSessions();
+// ------------------------- 斜杠命令 -------------------------
+
+const SLASH_COMMANDS = [
+  { cmd: '/clear', desc: '清空当前消息区' },
+  { cmd: '/chrome', desc: '让 Claude 操作当前浏览器标签页' },
+];
+
+const slashMenu = document.getElementById('slashMenu');
+let slashActiveIdx = -1;
+let slashFiltered = [];
+
+function renderSlashMenu(keyword) {
+  const kw = keyword.toLowerCase();
+  slashFiltered = SLASH_COMMANDS.filter((c) => c.cmd.includes(kw));
+  if (slashFiltered.length === 0) {
+    slashMenu.classList.add('hidden');
+    return;
+  }
+  slashActiveIdx = 0;
+  slashMenu.innerHTML = '';
+  slashFiltered.forEach((c, i) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'slash-menu__item' + (i === 0 ? ' slash-menu__item--active' : '');
+    btn.innerHTML = `<span class="slash-menu__cmd">${c.cmd}</span><span class="slash-menu__desc">${c.desc}</span>`;
+    btn.addEventListener('click', () => selectSlashCmd(c));
+    slashMenu.appendChild(btn);
+  });
+  slashMenu.classList.remove('hidden');
+}
+
+function hideSlashMenu() {
+  slashMenu.classList.add('hidden');
+  slashActiveIdx = -1;
+  slashFiltered = [];
+}
+
+function moveSlashActive(delta) {
+  if (slashFiltered.length === 0) return;
+  slashActiveIdx = (slashActiveIdx + delta + slashFiltered.length) % slashFiltered.length;
+  const items = slashMenu.querySelectorAll('.slash-menu__item');
+  items.forEach((el, i) => el.classList.toggle('slash-menu__item--active', i === slashActiveIdx));
+}
+
+function selectSlashCmd(c) {
+  chatInput.value = c.cmd + ' ';
+  hideSlashMenu();
+  chatInput.focus();
+  autoresize();
+}
+
+function isSlashMenuVisible() {
+  return !slashMenu.classList.contains('hidden');
+}
+
+chatInput.addEventListener('input', () => {
+  const text = chatInput.value;
+  if (text.startsWith('/') && !text.includes('\n')) {
+    renderSlashMenu(text);
+  } else {
+    hideSlashMenu();
+  }
+});
+
+chatInput.addEventListener('keydown', (e) => {
+  // 斜杠菜单可见时优先拦截方向键、Tab、Enter、Esc
+  if (isSlashMenuVisible()) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      moveSlashActive(1);
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      moveSlashActive(-1);
+      return;
+    }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.isComposing)) {
+      if (slashActiveIdx >= 0 && slashFiltered[slashActiveIdx]) {
+        e.preventDefault();
+        selectSlashCmd(slashFiltered[slashActiveIdx]);
+        return;
+      }
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      hideSlashMenu();
+      return;
+    }
+  }
+  // Enter 发送、Shift+Enter 换行；isComposing 保护中文输入法候选确认
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// ------------------------- 初始化 -------------------------
+
+// per-tab 模式：面板打开时绑定当前活动 tab（面板生命周期内不变），再加载会话列表
+chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  panelTabId = tabs?.[0]?.id ?? null;
+  panelTabUrl = normalizeUrl(tabs?.[0]?.url);
+  void loadSessions();
+});

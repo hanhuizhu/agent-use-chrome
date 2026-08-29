@@ -56,7 +56,20 @@ export interface PongMessage {
 // ------------------------- 侧边栏 Chat（extension -> bridge 反向请求） -------------------------
 
 /** 侧边栏聊天操作方法名 */
-export type ChatMethod = 'list_sessions' | 'send' | 'cancel' | 'get_history';
+export type ChatMethod = 'list_sessions' | 'send' | 'cancel' | 'get_history' | 'get_status';
+
+/** 进行中/排队轮次的概要（get_status 返回，面板重建后接管显示用） */
+export interface ChatTurnStatus {
+  turnId: string;
+  sessionId: string | null; // 新会话轮次在 result 前无法归属，为 null
+  message: string; // 该轮次的用户消息（面板补渲染气泡用）
+}
+
+/** get_status 返回结构 */
+export interface ChatStatusResult {
+  running: ChatTurnStatus | null;
+  queue: ChatTurnStatus[]; // 按排队顺序
+}
 
 /** 会话历史条目（get_history 返回，供面板回放） */
 export type ChatHistoryEntry =

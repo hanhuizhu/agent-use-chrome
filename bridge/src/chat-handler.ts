@@ -42,6 +42,9 @@ export class ChatHandler {
       case 'get_history':
         // 面板切换会话时回放历史消息
         return this.sessions.getHistory(String(msg.params.sessionId ?? ''));
+      case 'get_status':
+        // 面板重建后查询进行中/排队轮次，接管流式显示
+        return this.sessions.getStatus();
       default:
         throw new Error(`未知聊天方法 ${(msg as ChatRequestMessage).method}`);
     }
