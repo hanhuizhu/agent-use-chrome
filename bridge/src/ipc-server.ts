@@ -32,22 +32,85 @@ export class IpcServer {
     });
   }
 
+  /**
+   * 绑定 IPC socket（同时充当「选主锁」）：
+   * - 直接尝试 listen；EADDRINUSE 时探测残留 socket 是否有存活 Primary
+   * - 有存活 Primary 则抛错（调用方应转为 Proxy 模式），绝不误删活体的 socket 文件
+   * - 探测被拒绝（进程已死的残留文件）才 unlink 后重试绑定
+   */
   async start(): Promise<void> {
-    // 清理可能残留的 sock 文件
+    try {
+      await this.listen();
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EADDRINUSE') {
+        throw err;
+      }
+      const alive = await IpcServer.probeSocketAlive();
+      if (alive) {
+        throw new Error('已有存活的 Primary 占用 IPC socket');
+      }
+      // 残留的死文件：清理后重新绑定
+      try {
+        fs.unlinkSync(IPC_SOCKET_PATH);
+      } catch {
+        // 已被别人清理则忽略
+      }
+      await this.listen();
+    }
+    this.setupCleanup();
+  }
+
+  private listen(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const onError = (err: Error): void => {
+        this.server.removeListener('listening', onListening);
+        reject(err);
+      };
+      const onListening = (): void => {
+        this.server.removeListener('error', onError);
+        resolve();
+      };
+      this.server.once('error', onError);
+      this.server.once('listening', onListening);
+      this.server.listen(IPC_SOCKET_PATH);
+    });
+  }
+
+  /** 探测 IPC socket 是否有存活进程在监听（能建连即视为存活） */
+  private static probeSocketAlive(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const probe = net.createConnection(IPC_SOCKET_PATH);
+      const timer = setTimeout(() => {
+        probe.destroy();
+        resolve(false);
+      }, 1000);
+      probe.once('connect', () => {
+        clearTimeout(timer);
+        probe.destroy();
+        resolve(true);
+      });
+      probe.once('error', () => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+    });
+  }
+
+  /** 停止监听并清理 socket 文件（选主失败回滚时使用） */
+  async stop(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      this.server.close(() => resolve());
+      for (const client of this.clients) {
+        client.destroy();
+      }
+      this.clients.clear();
+    });
     try {
       fs.unlinkSync(IPC_SOCKET_PATH);
     } catch {
-      // 不存在则忽略
+      // ignore
     }
-
-    return new Promise((resolve, reject) => {
-      this.server.once('error', reject);
-      this.server.listen(IPC_SOCKET_PATH, () => {
-        this.server.removeListener('error', reject);
-        this.setupCleanup();
-        resolve();
-      });
-    });
   }
 
   private onConnection(socket: net.Socket): void {

@@ -2,7 +2,7 @@
  * panel.js —— 侧边栏公共逻辑
  * Tab 切换、连接状态显示（轮询 + 广播互补）、重连与紧急停止。
  *
- * 端口无需配置：extension 自动扫描 12345-12350（与 bridge 抢占顺序一致）；
+ * 端口无需配置：bridge 固定监听 12345，extension 只轮询该端口；
  * token 沿用 storage 中已存值（默认 local-dev-token）。
  */
 

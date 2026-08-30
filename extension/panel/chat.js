@@ -94,9 +94,11 @@ const pendingRequests = new Map(); // id -> { resolve, reject }
 
 // ------------------------- 与 background 的长连接 -------------------------
 
-const port = chrome.runtime.connect({ name: 'chat' });
+const PORT_RECONNECT_MS = 500; // SW 重启后长连接重建间隔
 
-port.onMessage.addListener((msg) => {
+let port = null;
+
+function handlePortMessage(msg) {
   if (msg?.type === 'chat_response') {
     const pending = pendingRequests.get(msg.id);
     if (!pending) return;
@@ -109,11 +111,23 @@ port.onMessage.addListener((msg) => {
   } else if (msg?.type === 'chat_stream') {
     handleStreamEvent(msg.turnId, msg.event);
   }
-});
+}
 
-port.onDisconnect.addListener(() => {
-  appendMeta('与扩展后台断开，请重新打开侧边栏', true);
-});
+/** 建立与 background 的长连接；SW 被杀导致断开时自动重建（旧行为是提示用户重开侧边栏） */
+function connectChatPort() {
+  port = chrome.runtime.connect({ name: 'chat' });
+  port.onMessage.addListener(handlePortMessage);
+  port.onDisconnect.addListener(() => {
+    // 在途请求随旧 SW 一起丢失，立即失败避免挂死
+    for (const [, pending] of pendingRequests) {
+      pending.reject(new Error('扩展后台已重启，请重试'));
+    }
+    pendingRequests.clear();
+    setTimeout(connectChatPort, PORT_RECONNECT_MS);
+  });
+}
+
+connectChatPort();
 
 /** 发起一次聊天请求（Promise 化） */
 function chatRequest(method, params = {}) {

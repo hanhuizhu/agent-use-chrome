@@ -9,15 +9,19 @@
  * - 标签页自动跟随：每次操作解析当前活动标签
  */
 
-// 端口候选段：与 bridge 一致，从小到大扫描（bridge 抢占第一个空闲端口）
-const PORT_RANGE = [12345, 12346, 12347, 12348, 12349, 12350];
+// bridge 固定监听 12345（不再扫描端口段）
+const BRIDGE_PORT = 12345;
 const DEFAULT_CONFIG = { token: 'local-dev-token' };
-const PORT_PROBE_TIMEOUT_MS = 500; // 单端口探测超时（localhost 无需 1.5s）
+const PROBE_TIMEOUT_MS = 800; // fetch 探测超时
+// WS 握手超时给足余量：Chrome 会对「近期失败过的 WebSocket 握手」做进程级节流延迟，
+// 超时太短会把被延迟的正常握手误判为失败，进一步加重节流（历史 bug 的根源之一）
+const WS_OPEN_TIMEOUT_MS = 10000;
 const RECONNECT_ALARM = 'ws-reconnect'; // chrome.alarms 名称，抗 SW 重启
 
 let ws = null;
 let currentPort = null; // 当前已连接的端口
-let scanning = false; // 是否正在扫描端口段
+let scanning = false; // 是否正在执行一次连接尝试（探测 + 握手）
+let scanGeneration = 0; // 连接尝试代际：reconnect 时递增，旧尝试自动作废
 let stopped = false; // 紧急停止后不再自动重连，直到用户点「保存并重连」
 let reconnectDelay = 1000; // 指数退避起始
 let reconnectTimer = null;
@@ -48,37 +52,68 @@ function log(text) {
 // ------------------------- WS 连接 -------------------------
 
 /**
- * 依次扫描 12345-12350（从小到大），连上第一个可用的 bridge。
- * 全部失败则指数退避后重新扫描。
+ * 连接 bridge（固定 12345），失败则指数退避后重试。
+ *
+ * 两阶段：先 fetch 探测端口是否有 bridge 在监听，确认后才开 WebSocket。
+ * 关键：fetch 失败不计入 Chrome 的 WebSocket 握手节流计数——bridge 宕机
+ * 期间零 WS 失败，恢复后首次握手即可成功（直接开 WS 的老方案会在宕机期间
+ * 累积失败，触发进程级节流，恢复后反而要等 1 分钟以上，只有 reload 插件
+ * 换进程才能清零计数）。
  */
 async function connect() {
   if (stopped || scanning || (ws && ws.readyState === WebSocket.OPEN)) {
     return;
   }
   scanning = true;
+  const gen = ++scanGeneration;
   clearTimeout(reconnectTimer);
   reconnectTimer = null;
-  chrome.alarms.clear(RECONNECT_ALARM).catch(() => {});
 
   try {
-    const { token } = await getConfig();
-    for (const port of PORT_RANGE) {
-      const opened = await tryPort(port, token);
-      if (opened) {
-        return;
-      }
+    const alive = await probeBridge();
+    if (scanGeneration !== gen) return;
+    if (!alive) {
+      broadcastStatus('disconnected');
+      scheduleReconnect();
+      return;
     }
-    broadcastStatus('disconnected');
-    scheduleReconnect();
+
+    const { token } = await getConfig();
+    if (scanGeneration !== gen) return;
+    const opened = await openSocket(token);
+    if (scanGeneration !== gen) return;
+    if (!opened) {
+      broadcastStatus('disconnected');
+      scheduleReconnect();
+    }
   } finally {
-    scanning = false;
+    if (scanGeneration === gen) {
+      scanning = false;
+    }
   }
 }
 
-/** 探测单个端口：成功打开则接管该 socket 并返回 true */
-function tryPort(port, token) {
+/** fetch 探测 12345 是否有 bridge：新 bridge /healthz 回 200+标识，旧 bridge 回 426 */
+async function probeBridge() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/healthz`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      cache: 'no-store',
+    });
+    if (res.status === 426) {
+      return true; // 旧版 bridge：ws 库对非 Upgrade 请求默认回 426
+    }
+    const text = await res.text();
+    return res.ok && text.includes('agent-use-chrome-bridge');
+  } catch {
+    return false;
+  }
+}
+
+/** 打开 WebSocket：成功则接管该 socket 并返回 true */
+function openSocket(token) {
   return new Promise((resolve) => {
-    const url = `ws://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`;
+    const url = `ws://127.0.0.1:${BRIDGE_PORT}/?token=${encodeURIComponent(token)}`;
     let sock;
     let settled = false;
 
@@ -97,7 +132,7 @@ function tryPort(port, token) {
         } catch {}
         resolve(false);
       }
-    }, PORT_PROBE_TIMEOUT_MS);
+    }, WS_OPEN_TIMEOUT_MS);
 
     sock.onopen = () => {
       if (settled) {
@@ -108,7 +143,7 @@ function tryPort(port, token) {
       }
       settled = true;
       clearTimeout(timer);
-      adoptSocket(sock, port);
+      adoptSocket(sock, BRIDGE_PORT);
       resolve(true);
     };
 
@@ -128,9 +163,15 @@ function tryPort(port, token) {
 
 /** 接管已打开的 socket：绑定消息/断连处理，广播已连接状态 */
 function adoptSocket(sock, port) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try { sock.close(); } catch {}
+    return;
+  }
   ws = sock;
   currentPort = port;
   reconnectDelay = 1000;
+  // 连接成功才清除兜底 alarm；断连期间它必须一直存在（SW 被杀后靠它唤醒重连）
+  chrome.alarms.clear(RECONNECT_ALARM).catch(() => {});
   broadcastStatus('connected', `ws://127.0.0.1:${port}`);
   log(`已连接 ws://127.0.0.1:${port}`);
   startHeartbeat();
@@ -153,12 +194,16 @@ function adoptSocket(sock, port) {
 }
 
 function scheduleReconnect() {
+  if (stopped) {
+    return; // 紧急停止后不再安排任何重连（含 stop 触发的 onclose 回调）
+  }
   clearTimeout(reconnectTimer);
-  // chrome.alarms 最小粒度 ~1 分钟，短延迟仍用 setTimeout
+  // 短延迟重试用 setTimeout（仅在 SW 存活期间有效）
   reconnectTimer = setTimeout(connect, reconnectDelay);
-  // 同时设一个 alarm 兜底：SW 被杀后 setTimeout 丢失，alarm 能唤醒
-  chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: 0.5 });
-  reconnectDelay = Math.min(reconnectDelay * 2, 15000);
+  // 周期型 alarm 兜底：SW 被杀后 setTimeout 丢失，靠它每 30s 唤醒重扫；
+  // 用 periodInMinutes 而非一次性 delay，避免「被杀在两次 re-arm 之间」导致永久丢失
+  chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: 0.5 });
+  reconnectDelay = Math.min(reconnectDelay * 2, 5000);
 }
 
 function startHeartbeat() {
@@ -614,6 +659,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.channel === 'control') {
     if (msg.action === 'reconnect') {
       stopped = false;
+      // 废弃正在跑的旧扫描（代际不匹配后旧扫描自动退出）
+      scanGeneration++;
+      scanning = false;
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
       // 先解除旧 socket 的 onclose 绑定，避免它触发 scheduleReconnect 覆盖本次重连
       const oldWs = ws;
       if (oldWs) {
@@ -637,6 +687,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         chrome.debugger.detach({ tabId }).catch(() => {});
       }
       attachedTabs.clear();
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      chrome.alarms.clear(RECONNECT_ALARM).catch(() => {});
       broadcastStatus('stopped');
       sendResponse({ ok: true });
     } else if (msg.action === 'queryStatus') {

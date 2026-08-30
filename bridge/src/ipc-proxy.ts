@@ -29,6 +29,8 @@ export class IpcProxy implements BridgeBackend {
   private socket: net.Socket;
   private pending = new Map<string, PendingIpc>();
   private eventListeners: EventListener[] = [];
+  private disconnectListeners: Array<() => void> = [];
+  private disconnectNotified = false;
   private _connected = false;
   private buffer = '';
 
@@ -67,6 +69,15 @@ export class IpcProxy implements BridgeBackend {
 
   onEvent(listener: EventListener): void {
     this.eventListeners.push(listener);
+  }
+
+  /** 注册 IPC 断开监听（Primary 退出时触发，仅一次），用于上层重新选主 */
+  onDisconnect(listener: () => void): void {
+    this.disconnectListeners.push(listener);
+    // 已经断开的情况下立即补触发，避免注册前断连导致监听丢失
+    if (this.socket.destroyed && !this.disconnectNotified) {
+      this.notifyDisconnect();
+    }
   }
 
   async request(method: BrowserMethod, params: Record<string, unknown> = {}): Promise<unknown> {
@@ -120,7 +131,9 @@ export class IpcProxy implements BridgeBackend {
     });
 
     this.socket.on('close', () => {
+      this._connected = false;
       this.rejectAllPending(new Error('IPC 连接断开（Primary 进程已退出）'));
+      this.notifyDisconnect();
     });
 
     this.socket.on('error', () => {
@@ -164,6 +177,16 @@ export class IpcProxy implements BridgeBackend {
         pending.resolve(msg.connected);
         break;
       }
+    }
+  }
+
+  private notifyDisconnect(): void {
+    if (this.disconnectNotified) {
+      return;
+    }
+    this.disconnectNotified = true;
+    for (const listener of this.disconnectListeners) {
+      listener();
     }
   }
 

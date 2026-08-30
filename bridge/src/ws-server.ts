@@ -3,13 +3,14 @@
  *
  * 职责：
  * - 只绑定 127.0.0.1，token 鉴权（拒绝非法连接）
- * - 端口段抢占：从候选端口从小到大尝试，绑定第一个空闲端口
+ * - 固定端口 12345：HTTP /healthz 供 extension fetch 探测，同端口承载 WS 升级
  * - 维护唯一的扩展连接（单浏览器场景），新连接顶替旧连接
  * - 提供 request()：向扩展发起一次操作并等待响应（带超时）
  * - 心跳保活，转发扩展事件
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
+import * as http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import {
   BridgeBackend,
@@ -20,6 +21,7 @@ import {
   ExtensionToBridge,
   RequestMessage,
   HEARTBEAT_INTERVAL_MS,
+  HEALTHZ_BODY,
   REQUEST_TIMEOUT_MS,
 } from './protocol.js';
 
@@ -53,38 +55,45 @@ export class BridgeWsServer implements BridgeBackend {
     this.wss.on('connection', (ws, req) => this.onConnection(ws, req.url ?? ''));
   }
 
-  /**
-   * 在候选端口列表中从小到大抢占第一个空闲端口。
-   * 全部被占用时抛错（附带各端口失败原因）。
-   */
-  static async create(ports: number[], token: string): Promise<BridgeWsServer> {
-    const failures: string[] = [];
-    for (const port of ports) {
-      try {
-        const wss = await BridgeWsServer.listen(port);
-        return new BridgeWsServer(wss, port, token);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        failures.push(`${port}: ${message}`);
-      }
+  /** 在固定端口启动 WS server；端口被占用等错误时抛错（附带原因） */
+  static async create(port: number, token: string): Promise<BridgeWsServer> {
+    try {
+      const wss = await BridgeWsServer.listen(port);
+      return new BridgeWsServer(wss, port, token);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`WS 端口 ${port} 不可用：${message}`);
     }
-    throw new Error(`候选端口全部不可用：\n${failures.join('\n')}`);
   }
 
-  /** 尝试在指定端口启动 WS server；EADDRINUSE 等错误时 reject */
+  /**
+   * 在指定端口启动 HTTP + WS server；EADDRINUSE 等错误时 reject。
+   * 普通 HTTP GET /healthz 返回标识文本，供 extension 用 fetch 探测
+   * （fetch 探测失败不会累积 Chrome 的 WebSocket 握手节流计数）。
+   */
   private static listen(port: number): Promise<WebSocketServer> {
     return new Promise((resolve, reject) => {
-      // 仅监听回环地址，避免暴露到局域网
-      const wss = new WebSocketServer({ host: '127.0.0.1', port });
+      const server = http.createServer((req, res) => {
+        if (req.method === 'GET' && (req.url === '/healthz' || req.url === '/')) {
+          res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+          res.end(HEALTHZ_BODY);
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+      const wss = new WebSocketServer({ server });
       const onError = (err: Error): void => {
-        wss.removeAllListeners('listening');
+        server.removeAllListeners('listening');
         reject(err);
       };
-      wss.once('error', onError);
-      wss.once('listening', () => {
-        wss.removeListener('error', onError);
+      server.once('error', onError);
+      server.once('listening', () => {
+        server.removeListener('error', onError);
         resolve(wss);
       });
+      // 仅监听回环地址，避免暴露到局域网
+      server.listen(port, '127.0.0.1');
     });
   }
 

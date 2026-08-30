@@ -152,9 +152,11 @@ export interface ScreenshotResult {
   cssHeight: number; // 可视区 CSS 像素高
 }
 
-/** WS 端口候选段：bridge 从小到大抢占第一个空闲端口；extension 按同一顺序扫描连接 */
-export const PORT_RANGE_START = 12345;
-export const PORT_RANGE_END = 12350;
+/** WS 固定端口：Primary 独占监听，extension 只轮询该端口（BRIDGE_PORT 可覆盖，供测试隔离） */
+export const WS_PORT = 12345;
+
+/** healthz 响应标识：extension 用 fetch 探测端口时校验，避免误认其他本地服务 */
+export const HEALTHZ_BODY = 'agent-use-chrome-bridge';
 
 /** 心跳间隔（毫秒）；需 < 30s 以保活 MV3 service worker */
 export const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -162,8 +164,8 @@ export const HEARTBEAT_INTERVAL_MS = 20_000;
 /** 单次操作请求的默认超时（毫秒） */
 export const REQUEST_TIMEOUT_MS = 30_000;
 
-/** IPC Unix socket 路径：Primary 监听，Proxy 连接 */
-export const IPC_SOCKET_PATH = '/tmp/agent-use-chrome-bridge.sock';
+/** IPC Unix socket 路径：Primary 监听，Proxy 连接（BRIDGE_IPC_PATH 可覆盖，供测试隔离） */
+export const IPC_SOCKET_PATH = process.env.BRIDGE_IPC_PATH ?? '/tmp/agent-use-chrome-bridge.sock';
 
 /**
  * Bridge 后端统一接口
