@@ -1,30 +1,35 @@
 /**
  * chat.js —— 侧边栏「聊天」Tab（per-tab 面板实例）
  *
- * 面板通过 sidePanel.setOptions({ tabId }) 绑定到单个 tab：切走自动收起（文档销毁），
- * 切回自动展开（文档重建）。因此一个面板文档只服务一个 tab，状态无需内存快照，
- * 而是靠持久化恢复：URL -> sessionId 映射存 chrome.storage.local，
- * 同 URL 二次打开时自动复用之前的 CC 会话并回放历史；无映射则默认「新会话」。
+ * 会话策略：不提供手动选会话，会话自动跟随页面 URL。
+ * URL -> sessionId 映射存 chrome.storage.local；同 URL 二次打开面板时
+ * 自动复用之前的 CC 会话并回放历史，无映射则本轮自动新建会话（首轮结束后落地绑定）。
+ *
+ * 新会话的工作目录默认 DEFAULT_CWD，可在设置面板里修改（存 storage，全局生效）。
  *
  * 唯一通道：消息经 background -> WS -> bridge，由 bridge spawn claude CLI headless 处理。
  * bridge 全局串行执行；忙时新消息在 bridge 侧排队（气泡带「排队中」标签），
  * 前一轮结束后自动续发（turn_start 事件到达即切换为处理中）。
  */
 
-const NEW_SESSION_VALUE = '__new__';
 const URL_SESSION_KEY = 'urlSessionMap'; // storage key：URL -> sessionId
+const CWD_KEY = 'defaultCwd'; // storage key：新会话工作目录
+const DEFAULT_CWD = '/Users/zhuhanhui/code/claude-code/browser-extensions'; // 默认工作目录
 
-const projectRow = document.getElementById('projectRow');
-const projectSelect = document.getElementById('projectSelect');
+const cwdInput = document.getElementById('cwdInput');
 const permissionSelect = document.getElementById('permissionSelect');
 const bypassWarn = document.getElementById('bypassWarn');
 const settingsToggle = document.getElementById('settingsToggle');
 const settingsPop = document.getElementById('settingsPop');
+const sessionBadge = document.getElementById('sessionBadge');
+const sessionBadgeText = document.getElementById('sessionBadgeText');
+const newSessionBtn = document.getElementById('newSessionBtn');
 const messagesEl = document.getElementById('messages');
 const emptyState = document.getElementById('emptyState');
 const chatInput = document.getElementById('chatInput');
 const chatSend = document.getElementById('chatSend');
 const chatStop = document.getElementById('chatStop');
+const quickSummarize = document.getElementById('quickSummarize');
 
 /** 单个轮次（turnId）的渲染状态 */
 function createTurn(turnId) {
@@ -40,10 +45,10 @@ function createTurn(turnId) {
 }
 
 const chatState = {
-  sessions: [], // list_sessions 结果
-  newSessionId: null, // 「新会话」首轮返回的 session id，后续消息续接它
+  sessionId: null, // 当前 URL 绑定的会话 id；null 表示尚无会话（发消息时自动新建）
+  cwd: DEFAULT_CWD, // 当前会话/新会话的工作目录
   turns: new Map(), // turnId -> turn
-  historySeq: 0, // 历史加载序号：快速切换会话时丢弃过期结果
+  historySeq: 0, // 历史加载序号：快速切换时丢弃过期结果
 };
 
 // 本面板绑定的 tab（per-tab 模式下面板生命周期内不变）
@@ -79,16 +84,53 @@ async function bindUrlSession(sessionId) {
   await chrome.storage.local.set({ [URL_SESSION_KEY]: map });
 }
 
-// 自定义会话下拉（原生 select 无法美化下拉面板）
-const picker = globalThis.SessionPicker.init({
-  onChange: (value) => {
-    chatState.newSessionId = null; // 切换目标后重置新会话续接状态
-    syncProjectRow();
-    void loadHistory(value);
-    // 手动选中已有会话时也绑定到当前 URL：下次同 URL 打开直接复用
-    if (value && value !== NEW_SESSION_VALUE) void bindUrlSession(value);
-  },
-});
+/** 解绑当前 URL 的会话（「新开会话」按钮用） */
+async function unbindUrlSession() {
+  if (!panelTabUrl) return;
+  const map = await getUrlSessionMap();
+  delete map[panelTabUrl];
+  await chrome.storage.local.set({ [URL_SESSION_KEY]: map });
+}
+
+// ------------------------- 会话状态徽标 -------------------------
+
+/**
+ * 顶栏徽标显示当前会话状态
+ * @param {'ready'|'new'|'busy'} mode
+ */
+function setSessionBadge(mode, text) {
+  sessionBadge.className = `session-badge session-badge--${mode}`;
+  sessionBadgeText.textContent = text;
+}
+
+function refreshBadge() {
+  if (chatState.sessionId) {
+    setSessionBadge('ready', `会话已绑定 · ${projectName(chatState.cwd)}`);
+  } else {
+    setSessionBadge('new', `新会话 · ${projectName(chatState.cwd)}`);
+  }
+}
+
+// ------------------------- 工作目录设置 -------------------------
+
+async function loadCwdSetting() {
+  const res = await chrome.storage.local.get([CWD_KEY]);
+  const cwd = res[CWD_KEY] || DEFAULT_CWD;
+  cwdInput.value = cwd;
+  // 已绑定会话时 cwd 以会话自身为准，这里只影响新会话
+  if (!chatState.sessionId) chatState.cwd = cwd;
+  return cwd;
+}
+
+async function saveCwdSetting() {
+  const cwd = cwdInput.value.trim() || DEFAULT_CWD;
+  cwdInput.value = cwd;
+  await chrome.storage.local.set({ [CWD_KEY]: cwd });
+  if (!chatState.sessionId) {
+    chatState.cwd = cwd;
+    refreshBadge();
+  }
+}
 
 const pendingRequests = new Map(); // id -> { resolve, reject }
 
@@ -113,7 +155,7 @@ function handlePortMessage(msg) {
   }
 }
 
-/** 建立与 background 的长连接；SW 被杀导致断开时自动重建（旧行为是提示用户重开侧边栏） */
+/** 建立与 background 的长连接；SW 被杀导致断开时自动重建 */
 function connectChatPort() {
   port = chrome.runtime.connect({ name: 'chat' });
   port.onMessage.addListener(handlePortMessage);
@@ -141,15 +183,7 @@ function chatRequest(method, params = {}) {
   };
 }
 
-// ------------------------- 会话列表 -------------------------
-
-function formatTime(mtime) {
-  const d = new Date(mtime);
-  const today = new Date();
-  const isToday = d.toDateString() === today.toDateString();
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return isToday ? hm : `${d.getMonth() + 1}-${d.getDate()} ${hm}`;
-}
+// ------------------------- 会话解析 -------------------------
 
 function projectName(cwd) {
   return cwd ? cwd.split('/').filter(Boolean).pop() : '(未知项目)';
@@ -159,57 +193,42 @@ function escapeText(s) {
   return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
-async function loadSessions() {
-  picker.setPlaceholder('加载会话中…');
-  try {
-    chatState.sessions = (await chatRequest('list_sessions').promise) ?? [];
-    await renderSessionOptions();
-  } catch (err) {
-    picker.setPlaceholder(`加载失败：${err.message}`);
-  }
-}
+/**
+ * 面板打开时解析当前 URL 应使用的会话：
+ * 有绑定且会话仍存在 -> 复用并回放历史；否则清理失效绑定，等首条消息自动新建。
+ */
+async function resolveSession() {
+  await loadCwdSetting();
+  setSessionBadge('busy', '查找会话…');
 
-async function renderSessionOptions() {
-  const options = [
-    { value: NEW_SESSION_VALUE, title: '＋ 新会话（选择项目）' },
-    ...chatState.sessions.map((s) => ({
-      value: s.sessionId,
-      title: s.title,
-      sub: `${projectName(s.cwd)} · ${formatTime(s.mtime)}`,
-    })),
-  ];
-  picker.setOptions(options);
-  // 默认选择：同 URL 之前绑定过会话则复用，否则默认「新会话」（每个 tab 独立起步）
-  if (!picker.getValue()) {
+  let bound = null;
+  if (panelTabUrl) {
     const map = await getUrlSessionMap();
-    const bound = panelTabUrl ? map[panelTabUrl] : null;
-    if (bound && chatState.sessions.some((s) => s.sessionId === bound)) {
-      picker.setValue(bound);
+    bound = map[panelTabUrl] ?? null;
+  }
+
+  if (bound) {
+    try {
+      const sessions = (await chatRequest('list_sessions').promise) ?? [];
+      const session = sessions.find((s) => s.sessionId === bound);
+      if (session) {
+        chatState.sessionId = session.sessionId;
+        chatState.cwd = session.cwd || chatState.cwd;
+        refreshBadge();
+        void loadHistory(session.sessionId);
+        return;
+      }
+      // 绑定的会话已被删除：清理失效映射
+      await unbindUrlSession();
+    } catch {
+      // bridge 未连上时保持绑定不动，乐观按已绑定处理（发消息时再报错）
+      chatState.sessionId = bound;
+      refreshBadge();
       void loadHistory(bound);
-    } else {
-      picker.setValue(NEW_SESSION_VALUE);
+      return;
     }
   }
-  syncProjectRow();
-}
-
-/** 新会话时显示项目选择（从已有会话的 cwd 去重而来） */
-function syncProjectRow() {
-  const isNew = picker.getValue() === NEW_SESSION_VALUE;
-  projectRow.classList.toggle('hidden', !isNew);
-  if (!isNew) return;
-
-  const cwds = [...new Set(chatState.sessions.map((s) => s.cwd).filter(Boolean))];
-  projectSelect.innerHTML = '';
-  for (const cwd of cwds) {
-    const opt = document.createElement('option');
-    opt.value = cwd;
-    opt.textContent = `${projectName(cwd)}（${cwd}）`;
-    projectSelect.appendChild(opt);
-  }
-  if (cwds.length === 0) {
-    projectSelect.innerHTML = '<option value="">无可用项目（先在终端里用过 CC）</option>';
-  }
+  refreshBadge();
 }
 
 // ------------------------- 消息渲染 -------------------------
@@ -263,7 +282,7 @@ function appendAssistantBlock(time = nowTime()) {
   wrap.className = 'msg msg--assistant';
   const role = document.createElement('div');
   role.className = 'msg__role';
-  role.innerHTML = `✳ Claude${time ? ` <span class="msg__time">${time}</span>` : ''}`;
+  role.innerHTML = `<span class="msg__avatar">✳</span> Claude${time ? ` <span class="msg__time">${time}</span>` : ''}`;
   const body = document.createElement('div');
   body.className = 'msg__body md';
   wrap.appendChild(role);
@@ -278,12 +297,34 @@ function renderAssistant(bodyEl, text) {
   scrollToBottom();
 }
 
+/** 工具图标映射：常见工具给个易识别的 emoji */
+const TOOL_ICONS = {
+  Bash: '💻',
+  Read: '📖',
+  Write: '✏️',
+  Edit: '✏️',
+  Grep: '🔍',
+  Glob: '🔍',
+  WebFetch: '🌐',
+  WebSearch: '🌐',
+  Task: '🤖',
+  Agent: '🤖',
+};
+
+function toolIcon(name) {
+  return TOOL_ICONS[name] ?? '🔧';
+}
+
 function appendToolCard(name, summary) {
   const card = document.createElement('div');
   card.className = 'tool-card';
   const head = document.createElement('button');
   head.className = 'tool-card__head';
-  head.innerHTML = `<span class="tool-card__arrow">▸</span> ${escapeText(name)} <span class="tool-card__hint">${escapeText(summary)}</span>`;
+  head.innerHTML =
+    `<span class="tool-card__arrow">▸</span>` +
+    `<span class="tool-card__icon">${toolIcon(name)}</span>` +
+    `<span class="tool-card__name">${escapeText(name)}</span>` +
+    `<span class="tool-card__hint">${escapeText(summary)}</span>`;
   const detail = document.createElement('pre');
   detail.className = 'tool-card__detail hidden';
   detail.textContent = summary;
@@ -353,15 +394,15 @@ function renderHistoryEntry(entry) {
   }
 }
 
-/** 切换会话时回放该会话的历史消息（最近 100 条） */
-async function loadHistory(value) {
+/** 回放会话的历史消息（最近 100 条） */
+async function loadHistory(sessionId) {
   const seq = ++chatState.historySeq;
   clearMessages();
-  if (!value || value === NEW_SESSION_VALUE) return;
+  if (!sessionId) return;
 
   const loading = appendMeta('加载历史消息…');
   try {
-    const res = await chatRequest('get_history', { sessionId: value }).promise;
+    const res = await chatRequest('get_history', { sessionId }).promise;
     if (seq !== chatState.historySeq) return; // 期间又切换了会话，丢弃
     loading.remove();
     const entries = res?.entries ?? [];
@@ -372,7 +413,7 @@ async function loadHistory(value) {
       appendDivider('以上为历史消息');
       scrollToBottom();
     }
-    await adoptActiveTurns(value, entries, seq);
+    await adoptActiveTurns(sessionId, entries, seq);
   } catch (err) {
     if (seq !== chatState.historySeq) return;
     loading.remove();
@@ -469,9 +510,11 @@ function handleStreamEvent(turnId, event) {
       break;
     case 'result': {
       finishTurn(turn);
-      if (event.sessionId && picker.getValue() === NEW_SESSION_VALUE) {
-        chatState.newSessionId = event.sessionId;
-        // 新会话落地后绑定到当前 URL：同 URL 二次打开面板时复用
+      // headless resume 每轮可能派生新 session id：始终跟踪最新 id 并回写 URL 绑定，
+      // 保证同 URL 下次打开面板时接到含最新历史的会话文件
+      if (event.sessionId && event.sessionId !== chatState.sessionId) {
+        chatState.sessionId = event.sessionId;
+        refreshBadge();
         void bindUrlSession(event.sessionId);
       }
       const cost = typeof event.costUsd === 'number' ? ` · $${event.costUsd.toFixed(4)}` : '';
@@ -497,42 +540,20 @@ function finishTurn(turn) {
 
 // ------------------------- 发送 / 停止 -------------------------
 
-/** 解析当前选择，得到 send 参数；不合法时返回 null 并提示 */
-function resolveSendTarget() {
-  const selected = picker.getValue();
-  if (selected === NEW_SESSION_VALUE) {
-    // 新会话：首轮不带 sessionId；后续轮次续接返回的 id（bridge 侧也会为排队消息续接）
-    const cwd = projectSelect.value;
-    if (!cwd) {
-      appendMeta('请先选择新会话所属的项目目录', true);
-      return null;
-    }
-    return { sessionId: chatState.newSessionId ?? undefined, cwd };
-  }
-  const session = chatState.sessions.find((s) => s.sessionId === selected);
-  if (!session) {
-    appendMeta('请先选择一个会话', true);
-    return null;
-  }
-  return { sessionId: session.sessionId, cwd: session.cwd };
-}
-
-async function sendMessage() {
-  const message = chatInput.value.trim();
+/** 发送一条指定文本的消息（输入框发送与快捷指令共用） */
+async function sendText(message) {
   if (!message) return;
-  const target = resolveSendTarget();
-  if (!target) return;
 
+  // 已绑定会话则续接；未绑定则首轮不带 sessionId，由 CLI 新建（result 事件里落地绑定）
   const { id, promise } = chatRequest('send', {
-    ...target,
+    sessionId: chatState.sessionId ?? undefined,
+    cwd: chatState.cwd,
     message,
     permissionMode: permissionSelect.value,
   });
   const turn = createTurn(id);
   chatState.turns.set(id, turn);
   appendUserBubble(turn, message);
-  chatInput.value = '';
-  autoresize();
   updateComposer();
 
   try {
@@ -548,6 +569,14 @@ async function sendMessage() {
   }
 }
 
+async function sendMessage() {
+  const message = chatInput.value.trim();
+  if (!message) return;
+  chatInput.value = '';
+  autoresize();
+  await sendText(message);
+}
+
 /** 停止当前轮次并清空队列（各轮次的「已取消」由流事件推回） */
 function stopAll() {
   chatRequest('cancel').promise.catch(() => {});
@@ -560,8 +589,27 @@ function autoresize() {
   chatInput.style.height = `${Math.min(chatInput.scrollHeight, 200)}px`;
 }
 
+// 「总结当前页面」快捷指令：带上当前 tab 的实时 URL，走 /chrome 让 CLI 读取页面内容
+async function sendSummarizePage() {
+  quickSummarize.disabled = true; // 防重复点击，请求受理后恢复
+  try {
+    let url = panelTabUrl;
+    try {
+      const tab = await chrome.tabs.get(panelTabId);
+      url = normalizeUrl(tab?.url) ?? url;
+    } catch {
+      // tab 可能已关闭，退回打开面板时的 URL
+    }
+    const target = url ? `（${url}）` : '';
+    await sendText(`/chrome 总结一下当前打开的页面${target}：读取页面主要内容，用中文输出核心要点。`);
+  } finally {
+    quickSummarize.disabled = false;
+  }
+}
+
 chatSend.addEventListener('click', sendMessage);
 chatStop.addEventListener('click', stopAll);
+quickSummarize.addEventListener('click', () => void sendSummarizePage());
 chatInput.addEventListener('input', autoresize);
 
 settingsToggle.addEventListener('click', () => {
@@ -572,7 +620,16 @@ permissionSelect.addEventListener('change', () => {
   bypassWarn.classList.toggle('hidden', permissionSelect.value !== 'bypassPermissions');
 });
 
-document.getElementById('refreshSessions').addEventListener('click', loadSessions);
+cwdInput.addEventListener('change', () => void saveCwdSetting());
+
+// 「新开会话」：解绑当前 URL，清空消息区，下一条消息自动新建会话
+newSessionBtn.addEventListener('click', async () => {
+  await unbindUrlSession();
+  chatState.sessionId = null;
+  chatState.cwd = cwdInput.value.trim() || DEFAULT_CWD;
+  clearMessages();
+  refreshBadge();
+});
 
 // ------------------------- 斜杠命令 -------------------------
 
@@ -673,9 +730,9 @@ chatInput.addEventListener('keydown', (e) => {
 
 // ------------------------- 初始化 -------------------------
 
-// per-tab 模式：面板打开时绑定当前活动 tab（面板生命周期内不变），再加载会话列表
+// per-tab 模式：面板打开时绑定当前活动 tab（面板生命周期内不变），再解析 URL 对应会话
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   panelTabId = tabs?.[0]?.id ?? null;
   panelTabUrl = normalizeUrl(tabs?.[0]?.url);
-  void loadSessions();
+  void resolveSession();
 });
